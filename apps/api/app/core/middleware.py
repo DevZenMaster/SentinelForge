@@ -3,16 +3,21 @@
 Implements:
 1. Request/Correlation ID propagation (via X-Request-ID header and request.state).
 2. Structured access logging with duration and status code.
-3. Safe error response envelope ensuring internal stack traces are never exposed.
+3. Security headers enforcement (CSP, HSTS, X-Content-Type-Options, X-Frame-Options).
+4. Defense-in-depth CSRF protection for cookie-authenticated state-changing requests.
 """
 
 import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.core.config import settings
 
 logger = logging.getLogger("sentinelforge.access")
 
@@ -66,3 +71,106 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
                 },
             )
             raise exc
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Middleware enforcing defense-in-depth security headers on all responses."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; frame-ancestors 'none'; object-src 'none';"
+        )
+        if settings.ENVIRONMENT == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+class CSRFProtectionMiddleware(BaseHTTPMiddleware):
+    """Protects cookie-authenticated state-changing requests against CSRF.
+
+    For state-changing methods (POST, PUT, PATCH, DELETE) with an active session cookie:
+    1. Validates custom header (X-Requested-With / X-CSRF-Token / application/json content).
+    2. Validates Origin/Referer against allowed CORS origins or host.
+    """
+
+    UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not settings.CSRF_PROTECTION_ENABLED:
+            return await call_next(request)
+
+        if request.method in self.UNSAFE_METHODS:
+            session_cookie = request.cookies.get(settings.SESSION_COOKIE_NAME)
+            if session_cookie:
+                # 1. Custom header check to prevent ambient HTML form submission
+                has_custom_header = bool(
+                    request.headers.get("X-Requested-With")
+                    or request.headers.get("X-CSRF-Token")
+                    or request.headers.get("Content-Type", "").startswith("application/json")
+                )
+                if not has_custom_header:
+                    request_id = getattr(request.state, "request_id", "unknown")
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "data": None,
+                            "meta": {
+                                "timestamp": datetime.now(UTC).isoformat(),
+                                "request_id": str(request_id),
+                            },
+                            "error": {
+                                "code": "CSRF_ERROR",
+                                "message": (
+                                    "Cross-Site Request Forgery validation failed: "
+                                    "missing required anti-CSRF request header."
+                                ),
+                                "details": None,
+                            },
+                        },
+                        headers={"X-Request-ID": str(request_id)},
+                    )
+
+                # 2. Origin/Referer verification
+                origin = request.headers.get("Origin") or request.headers.get("Referer")
+                if origin:
+                    origin_clean = origin.rstrip("/")
+                    allowed = False
+                    for allowed_origin in settings.BACKEND_CORS_ORIGINS:
+                        if origin_clean.startswith(allowed_origin.rstrip("/")):
+                            allowed = True
+                            break
+                    host = request.headers.get("Host", "")
+                    if host and host in origin_clean:
+                        allowed = True
+
+                    if not allowed:
+                        request_id = getattr(request.state, "request_id", "unknown")
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "data": None,
+                                "meta": {
+                                    "timestamp": datetime.now(UTC).isoformat(),
+                                    "request_id": str(request_id),
+                                },
+                                "error": {
+                                    "code": "CSRF_ERROR",
+                                    "message": (
+                                        "Cross-Site Request Forgery validation failed: "
+                                        "untrusted request origin."
+                                    ),
+                                    "details": None,
+                                },
+                            },
+                            headers={"X-Request-ID": str(request_id)},
+                        )
+
+        return await call_next(request)

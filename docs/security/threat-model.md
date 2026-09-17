@@ -1,9 +1,58 @@
 # SentinelForge Threat Model Documentation
 
-See root [THREAT-MODEL.md](../../THREAT-MODEL.md) for the complete STRIDE Threat Matrix, mitigations, and residual risks.
+See root [THREAT-MODEL.md](../../THREAT-MODEL.md) for the complete project-wide STRIDE Threat Matrix, mitigations, and residual risks.
 
-### Summary of Key Controls
-1. **Zero Trust Authentication**: Argon2id password hashing, database-backed session invalidation, strict rate limiting.
-2. **Deterministic Detection**: Unambiguous rule triggers without black-box ML inference.
-3. **Immutable Auditing**: Append-only audit records tracking user actions, IP addresses, and state changes.
-4. **Least Privilege RBAC**: Server-side permission enforcement on all API routes.
+---
+
+## Phase 2: Authentication & RBAC Security Architecture
+
+### 1. Server-Managed Session Security
+* **No Client-Stored Tokens / JWTs**: SentinelForge deliberately rejects browser-accessible JWTs and `localStorage` persistence to mitigate token exfiltration via XSS.
+* **Opaque Session Tokens**: Generated using cryptographically secure entropy (`secrets.token_urlsafe(32)` providing 256 bits of entropy).
+* **Database Token Hashing**: The database **never** stores raw session tokens. Tokens are hashed using SHA-256 (`session_token_hash`) prior to storage. If database backups or replicas are compromised, attackers cannot reconstruct active user session cookies.
+* **Cookie Defenses**:
+  - `HttpOnly`: Prevents client-side scripts from reading the session cookie.
+  - `SameSite=Lax`: Prevents ambient transmission in standard cross-site requests.
+  - `Secure`: Transmitted strictly over HTTPS in production environments.
+  - `Path=/`: Restricts cookie scope to the SentinelForge origin.
+
+### 2. Password Storage & Anti-Enumeration Controls
+* **Argon2id Password Hashing (RFC 9106)**:
+  - `time_cost = 3`
+  - `memory_cost = 65536 KiB` (64 MiB)
+  - `parallelism = 4`
+  - Memory-hard algorithm resistant to GPU-accelerated cracking and ASIC attacks.
+* **Constant-Time Verification on Unknown Accounts**:
+  - To defeat account enumeration via response-timing discrepancies, authentication attempts targeting non-existent or inactive usernames execute an Argon2id verification cycle against a deterministic precomputed dummy hash (`_DUMMY_HASH`).
+  - Responses return generic `401 Unauthorized` (`"Invalid username or password."`) regardless of whether the identifier exists.
+
+### 3. Role-Based Access Control (RBAC) Matrix
+* **Normalized Database-Backed RBAC**: Permissions are assigned to Roles, and Roles are assigned to Users via associative tables (`role_permissions`, `user_roles`).
+* **Zero Trust in Client Claims**: Authorization decisions are computed entirely server-side from PostgreSQL via `resolve_user_capabilities()`.
+* **Persona Boundaries**:
+  - `ADMIN`: Full access to user management, detection rule lifecycle, alert handling, incident management, and audit inspection.
+  - `ANALYST`: Triage alerts, author/tune detection rules, create/update incidents, search events, inspect audit logs. No access to user creation/deletion or rule deletion.
+  - `VIEWER`: Read-only access to events, alerts, incidents, and audit trails. No mutate or create actions permitted.
+* **FastAPI Dependency Guards**: `require_permission(perm)` and `require_role(role)` evaluate server-side context; unauthenticated requests receive `401`, while authenticated requests lacking permissions receive `403 Forbidden`.
+
+### 4. Defense-in-Depth CSRF Defense
+* **SameSite Cookie Isolation**: Mitigates automated ambient credential inclusion.
+* **State-Changing Custom Header & Origin Verification**: `CSRFProtectionMiddleware` intercepts unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) with an active session cookie:
+  - Validates the presence of an anti-CSRF custom header (`X-Requested-With`, `X-CSRF-Token`) or `application/json` payload structure.
+  - Validates `Origin` and `Referer` headers against configured `BACKEND_CORS_ORIGINS`. Untrusted origins receive `403 CSRF_ERROR`.
+
+### 5. In-Memory Sliding-Window Rate Limiting
+* `/api/v1/auth/login` is protected by a thread-safe sliding window limiter.
+* Tracks both source IP (`auth:ip:<ip>`) and targeted identifier (`auth:user:<username>`).
+* Exceeded requests return `429 Too Many Requests` with `Retry-After` headers.
+
+### 6. Append-Only Security Audit Trail
+* Authentication and authorization events write immutable audit records to `audit_logs`.
+* Actions captured: `LOGIN_SUCCESS`, `LOGIN_FAILURE`, `LOGOUT`.
+* Audit records capture `actor_user_id`, `action`, `resource_type`, `resource_id`, `source_ip`, `user_agent`, `request_id`, and `timestamp`.
+* **No Credential Storage**: Audit trails strictly redact and exclude passwords, session tokens, and token hashes.
+
+### 7. Acknowledged Residual Risks
+* **Single-Process Memory Limiting**: In-memory rate limiting is process-bound. Distributed clusters in subsequent phases will integrate Redis for multi-node sliding window state.
+* **Database Admin Access**: A compromised PostgreSQL superuser could directly mutate database records, bypassing API-level immutability. Addressed via database-level privilege separation in production.
+

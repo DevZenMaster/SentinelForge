@@ -18,7 +18,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.v1 import api_v1_router
 from app.core.config import settings
 from app.core.logging import setup_logging
-from app.core.middleware import RequestCorrelationMiddleware
+from app.core.middleware import (
+    CSRFProtectionMiddleware,
+    RequestCorrelationMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.db.session import engine
 
 # Initialize structured logging subsystem
@@ -54,7 +58,13 @@ def create_app() -> FastAPI:
     # 1. Add Request Correlation and Access Logging Middleware
     app.add_middleware(RequestCorrelationMiddleware)
 
-    # 2. Add CORS Middleware (Restricted to configured origins; never wildcard with credentials)
+    # 2. Add Security Headers Middleware
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # 3. Add CSRF Protection Middleware
+    app.add_middleware(CSRFProtectionMiddleware)
+
+    # 4. Add CORS Middleware (Restricted to configured origins; never wildcard with credentials)
     if settings.BACKEND_CORS_ORIGINS:
         app.add_middleware(
             CORSMiddleware,
@@ -83,6 +93,10 @@ def create_app() -> FastAPI:
         elif exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
             error_code = "RATE_LIMIT_EXCEEDED"
 
+        response_headers = {"X-Request-ID": str(request_id)}
+        if exc.headers:
+            response_headers.update(exc.headers)
+
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -97,7 +111,7 @@ def create_app() -> FastAPI:
                     "details": None,
                 },
             },
-            headers={"X-Request-ID": str(request_id)},
+            headers=response_headers,
         )
 
     @app.exception_handler(RequestValidationError)

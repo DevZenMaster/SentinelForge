@@ -140,7 +140,9 @@ class Session(Base, UUIDPrimaryKeyMixin):
 
     __tablename__ = "sessions"
 
-    session_token: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    session_token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )

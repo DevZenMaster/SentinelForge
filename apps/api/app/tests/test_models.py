@@ -83,3 +83,15 @@ def test_audit_log_indexes() -> None:
 
     assert ["actor_user_id", "timestamp"] in index_column_sets
     assert ["resource_type", "resource_id", "timestamp"] in index_column_sets
+
+
+def test_session_model_token_hash_constraint() -> None:
+    """Verify Session table uses session_token_hash (SHA-256) instead of raw token."""
+    table = Base.metadata.tables["sessions"]
+    assert "session_token_hash" in table.c
+    assert "session_token" not in table.c
+    assert getattr(table.c.session_token_hash.type, "length", None) == 64
+    assert table.c.session_token_hash.unique or any(
+        idx.unique and "session_token_hash" in [col.name for col in idx.columns]
+        for idx in table.indexes
+    )

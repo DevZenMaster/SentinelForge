@@ -40,17 +40,34 @@
    alembic upgrade head
    ```
 
-6. Seed default roles, permissions, and admin user:
+6. Seed default RBAC roles, permissions, and initial admin account:
    ```bash
-   python -m app.scripts.seed
+   PYTHONPATH=. python scripts/seed.py
    ```
+   *Default Admin Account (Local Development Only)*:
+   - **Username**: `admin`
+   - **Password**: `AdminSentinel_2026_Secure!`
+   - **Assigned Role**: `ADMIN` (with global superuser privileges)
 
 7. Start the API development server:
    ```bash
    uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
 
-The OpenAPI documentation is accessible at `http://127.0.0.1:8000/docs`.
+8. Run test suite, linters, and type checker:
+   ```bash
+   # Run all unit, integration, and security tests (46 tests)
+   PYTHONPATH=. pytest -v
+
+   # Run Ruff linter and code formatter
+   ruff check app
+   ruff format --check app
+
+   # Run Mypy in strict mode
+   PYTHONPATH=. mypy app
+   ```
+
+The OpenAPI documentation is accessible at `http://127.0.0.1:8000/docs` (in non-production mode).
 
 ---
 

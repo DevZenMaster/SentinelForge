@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     AUTH_RATE_LIMIT_PER_MINUTE: int = 10
     EVENTS_RATE_LIMIT_PER_MINUTE: int = 1000
 
+    # Session Cookie & CSRF Security Settings
+    SESSION_COOKIE_NAME: str = "sentinelforge_session"
+    SESSION_COOKIE_HTTPONLY: bool = True
+    SESSION_COOKIE_SECURE: bool = False
+    SESSION_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    SESSION_EXPIRE_HOURS: int = Field(default=12, ge=1, le=168)
+    CSRF_PROTECTION_ENABLED: bool = True
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def async_database_url(self) -> str:
@@ -110,6 +118,16 @@ class Settings(BaseSettings):
             if self.POSTGRES_PASSWORD in {"sentinel_dev_password_change_me", "postgres", ""}:
                 raise ValueError(
                     "CRITICAL: Default database password detected in production configuration."
+                )
+
+            if not self.SESSION_COOKIE_SECURE:
+                raise ValueError(
+                    "CRITICAL: In production environment, SESSION_COOKIE_SECURE must be True."
+                )
+
+            if not self.SESSION_COOKIE_HTTPONLY:
+                raise ValueError(
+                    "CRITICAL: In production environment, SESSION_COOKIE_HTTPONLY must be True."
                 )
 
         # In all environments, disallow wildcard origin with credentials

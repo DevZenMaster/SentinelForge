@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import hash_session_token
 from app.models import (
     Alert,
     AlertEvent,
@@ -97,8 +98,9 @@ async def test_session_lifecycle_and_user_cascade(test_db_session: AsyncSession)
 
     now = datetime.now(UTC)
     token = uuid.uuid4().hex + uuid.uuid4().hex
+    token_hash = hash_session_token(token)
     session = Session(
-        session_token=token,
+        session_token_hash=token_hash,
         user_id=user.id,
         expires_at=now + timedelta(hours=8),
         ip_address="127.0.0.1",
@@ -108,7 +110,7 @@ async def test_session_lifecycle_and_user_cascade(test_db_session: AsyncSession)
     await test_db_session.commit()
 
     # Verify session is retrievable
-    stmt = select(Session).where(Session.session_token == token)
+    stmt = select(Session).where(Session.session_token_hash == token_hash)
     res = await test_db_session.execute(stmt)
     assert res.scalar_one_or_none() is not None
 
