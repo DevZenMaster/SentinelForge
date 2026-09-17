@@ -1,0 +1,64 @@
+"""Normalized Security Event ORM Model.
+
+Preserves both full raw log payloads and extracted normalized fields
+with targeted indexes designed for high-performance temporal detection window queries.
+"""
+
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import JSON_COMPAT, Base, UUIDPrimaryKeyMixin, utc_now
+
+if TYPE_CHECKING:
+    from app.models.alert import AlertEvent
+
+
+class Event(Base, UUIDPrimaryKeyMixin):
+    """Normalized security event record."""
+
+    __tablename__ = "events"
+
+    # Ingestion & event timestamps (always timezone-aware UTC)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    # Core source telemetry
+    source: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
+    destination_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    destination_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Event classification & taxonomy
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    username: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="INFO", nullable=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Traceability & audit
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Payloads
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_COMPAT, nullable=False)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON_COMPAT, default=dict, nullable=False
+    )
+
+    # Relationships
+    alert_events: Mapped[list["AlertEvent"]] = relationship(
+        "AlertEvent", back_populates="event", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        # Temporal compound indexes evaluated for detection rule sliding window scans
+        Index("ix_events_source_ip_timestamp", "source_ip", "timestamp"),
+        Index("ix_events_username_timestamp", "username", "timestamp"),
+        Index("ix_events_event_type_timestamp", "event_type", "timestamp"),
+        Index("ix_events_action_timestamp", "action", "timestamp"),
+    )

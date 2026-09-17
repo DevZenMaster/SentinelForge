@@ -77,11 +77,23 @@ Access the SOC dashboard at `http://localhost:3000`.
 
 ## 4. Running Automated Tests
 
-### Backend Tests
+### Backend Tests & Verification
 ```bash
 cd apps/api
 source .venv/bin/activate
+
+# Run Pytest suite
 pytest -v
+
+# Code formatting and linting
+ruff check app
+ruff format --check app
+
+# Strict static type checking
+mypy app
+
+# Offline PostgreSQL DDL migration validation
+alembic upgrade --sql head
 ```
 
 ### Security Scans
