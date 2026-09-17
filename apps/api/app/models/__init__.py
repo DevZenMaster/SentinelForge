@@ -6,7 +6,7 @@ from app.models.audit import AuditLog
 from app.models.auth import Permission, Role, RolePermission, Session, User, UserRole
 from app.models.detection import DetectionRule
 from app.models.event import Event
-from app.models.incident import Incident, IncidentAlert
+from app.models.incident import Incident, IncidentAlert, IncidentEvent, IncidentNote
 
 __all__ = [
     "Base",
@@ -22,5 +22,7 @@ __all__ = [
     "AlertEvent",
     "Incident",
     "IncidentAlert",
+    "IncidentEvent",
+    "IncidentNote",
     "AuditLog",
 ]

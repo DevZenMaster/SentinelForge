@@ -41,7 +41,9 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Session", back_populates="user", cascade="all, delete-orphan"
     )
     incidents: Mapped[list["Incident"]] = relationship(
-        "Incident", back_populates="assigned_to_user"
+        "Incident",
+        foreign_keys="[Incident.assigned_to_user_id]",
+        back_populates="assigned_to_user",
     )
 
 

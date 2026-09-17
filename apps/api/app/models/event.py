@@ -14,6 +14,7 @@ from app.db.base import JSON_COMPAT, Base, UUIDPrimaryKeyMixin, utc_now
 
 if TYPE_CHECKING:
     from app.models.alert import AlertEvent
+    from app.models.incident import IncidentEvent
 
 
 class Event(Base, UUIDPrimaryKeyMixin):
@@ -73,6 +74,9 @@ class Event(Base, UUIDPrimaryKeyMixin):
     # Relationships
     alert_events: Mapped[list["AlertEvent"]] = relationship(
         "AlertEvent", back_populates="event", cascade="all, delete-orphan"
+    )
+    incident_events: Mapped[list["IncidentEvent"]] = relationship(
+        "IncidentEvent", back_populates="event"
     )
 
     __table_args__ = (

@@ -54,7 +54,8 @@ SentinelForge adheres to a decoupled unidirectional pipeline ensuring clean sepa
 - **Strict Log Normalization**: UTC timestamp standardization, IP representation canonicalization, event taxonomy enforcement, and field sanitization.
 - **Deterministic Detection Engine**: Rule-based detection sliding windows without unpredictable black-box heuristics or hallucinations.
 - **Alert & Evidence Management**: Alerts strictly linked to triggering events (`alert_events`) maintaining an immutable evidence chain.
-- **Incident Response Workflow**: Alert aggregation into incidents, analyst assignment, severity assessment, containment tracking, and resolution notes.
+- **Incident Management & Investigation**: Case files with sequential identifiers (`INC-YYYY-NNNNNN`), multi-alert correlation, direct event evidence linking with `RESTRICT` referential integrity, analyst assignment, tamper-evident notes, and strict lifecycle state transitions (`OPEN` -> `IN_PROGRESS` -> `RESOLVED` -> `CLOSED` -> `REOPENED`).
+- **Unified Investigation Timeline**: Chronological event reconstruction cleanly separating underlying telemetric occurrence timestamps from SOC analyst investigation actions.
 - **Role-Based Access Control (RBAC)**: Server-side enforced authorization (`ADMIN`, `ANALYST`, `VIEWER`) across all API endpoints.
 - **Immutable Audit Logging**: Security-relevant mutations recorded with actor ID, action, resource, diff, source IP, user agent, and timestamp.
 - **Real Metrics SOC Dashboard**: Dark-mode SOC dashboard powered strictly by live database metrics without mock or randomized values.

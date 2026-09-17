@@ -100,11 +100,61 @@ Errors return appropriate HTTP status codes (`400`, `401`, `403`, `404`, `422`, 
 - `PATCH /api/v1/alerts/{id}/status` - Update alert status (`OPEN`, `ACKNOWLEDGED`, `INVESTIGATING`, `RESOLVED`, `FALSE_POSITIVE`).
 
 ### Incidents (`/api/v1/incidents`)
-- `POST /api/v1/incidents` - Create a new incident ticket.
-- `GET /api/v1/incidents` - List incidents (paginated, filtered by status, assignee, severity).
-- `GET /api/v1/incidents/{id}` - Retrieve incident details, grouped alerts, and timeline notes.
-- `PATCH /api/v1/incidents/{id}` - Update incident status, assignee, severity, or resolution notes.
-- `POST /api/v1/incidents/{id}/alerts` - Associate alerts with an existing incident.
+- `POST /api/v1/incidents` - Create a new incident case file.
+  - **Auth**: Required (`incidents.create` permission; granted to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Payload**: `IncidentCreateRequest` (`title` [3-255 chars], `description`, `severity` [`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`], `priority` [`LOW`, `MEDIUM`, `HIGH`, `URGENT`], `assigned_to_user_id` [optional UUID], `alert_ids` [optional UUID list], `event_ids` [optional UUID list]).
+  - **Behavior**: Atomically allocates unique ticket identifier `incident_id` (`INC-YYYY-NNNNNN`), associates initial alerts and events, attributes creator to authenticated user, records `INCIDENT_CREATE` audit log.
+  - **Responses**: `201 Created` with `IncidentDetailResponse`.
+- `GET /api/v1/incidents` - Search and filter incident cases.
+  - **Auth**: Required (`incidents.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
+  - **Query Parameters**: `status`, `severity`, `priority`, `assigned_to_user_id`, `created_by_user_id`, `search` (case-insensitive substring on title, description, or incident_id), `page` (default 1), `limit` (default 50, max 100).
+  - **Responses**: `200 OK` with `IncidentListResponse` (items summarized with counts of linked alerts, events, and notes).
+- `GET /api/v1/incidents/{incident_id}` - Retrieve complete incident details.
+  - **Auth**: Required (`incidents.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
+  - **Path Parameter**: `incident_id` accepts either human-readable `incident_id` (`INC-2026-000001`) or internal database `UUID`.
+  - **Responses**: `200 OK` with `IncidentDetailResponse` (enclosing linked alerts with evidence counts, linked direct events with timestamps and source types, and investigation notes), `404 Not Found` if nonexistent.
+- `PATCH /api/v1/incidents/{incident_id}` - Update incident metadata.
+  - **Auth**: Required (`incidents.update` permission; granted to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Payload**: `IncidentUpdateRequest` (optional `title`, `description`, `severity`, `priority`).
+  - **Responses**: `200 OK` with updated `IncidentDetailResponse`, `404 Not Found` if nonexistent.
+- `POST /api/v1/incidents/{incident_id}/status` - Transition incident lifecycle status.
+  - **Auth**: Required (`incidents.update` for `IN_PROGRESS`/`RESOLVED`/`REOPENED`; `incidents.close` for `CLOSED`).
+  - **Payload**: `IncidentStatusTransitionRequest` (`status` [`IN_PROGRESS`, `RESOLVED`, `CLOSED`, `REOPENED`], optional `resolution_category` [`TRUE_POSITIVE_BENIGN`, `TRUE_POSITIVE_MALICIOUS`, `FALSE_POSITIVE`, `DUPLICATE`, `OTHER`], optional `resolution_notes`, optional `reopen_reason`).
+  - **Validation & Rules**:
+    - Valid state transitions enforced: `OPEN -> IN_PROGRESS`, `IN_PROGRESS -> RESOLVED`, `IN_PROGRESS -> OPEN`, `RESOLVED -> CLOSED`, `RESOLVED -> REOPENED`, `CLOSED -> REOPENED`, `REOPENED -> IN_PROGRESS`, `REOPENED -> RESOLVED`.
+    - `RESOLVED` requires both `resolution_category` and non-empty `resolution_notes` (422 if missing).
+    - `CLOSED` requires `incidents.close` permission (403 if unauthorized) and sets `closed_at` and `closed_by_user_id`.
+    - `REOPENED` requires non-empty `reopen_reason` (422 if missing).
+  - **Responses**: `200 OK` with `IncidentDetailResponse`, `400 Bad Request` on invalid state transition.
+- `POST /api/v1/incidents/{incident_id}/assign` - Assign or reassign incident owner.
+  - **Auth**: Required (`incidents.update` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `IncidentAssignRequest` (`assigned_to_user_id` [UUID or null]).
+  - **Behavior**: Validates assignee is an active user (404 if invalid/inactive). Automatically advances `OPEN` incidents to `IN_PROGRESS`. Sets `assigned_to_user_id = null` when unassigned.
+  - **Responses**: `200 OK` with `IncidentDetailResponse`.
+- `POST /api/v1/incidents/{incident_id}/alerts` - Correlate security alert with incident.
+  - **Auth**: Required (`incidents.update` permission).
+  - **Payload**: `IncidentAlertAttachRequest` (`alert_id` [UUID]).
+  - **Responses**: `201 Created` with `IncidentAlertSummaryResponse`, `404 Not Found` if incident or alert missing, `409 Conflict` if alert already linked.
+- `DELETE /api/v1/incidents/{incident_id}/alerts/{alert_id}` - Detach alert from incident.
+  - **Auth**: Required (`incidents.update` permission).
+  - **Responses**: `200 OK`, `404 Not Found` if correlation does not exist.
+- `POST /api/v1/incidents/{incident_id}/events` - Link raw event directly to incident as evidence.
+  - **Auth**: Required (`incidents.update` permission).
+  - **Payload**: `IncidentEventAttachRequest` (`event_id` [UUID]).
+  - **Behavior**: Creates immutable evidence linkage (`ForeignKey("events.id", ondelete="RESTRICT")`).
+  - **Responses**: `201 Created` with `IncidentEventSummaryResponse`, `404 Not Found` if incident or event missing, `409 Conflict` if event already linked.
+- `DELETE /api/v1/incidents/{incident_id}/events/{event_id}` - Detach direct event evidence from incident.
+  - **Auth**: Required (`incidents.update` permission).
+  - **Responses**: `200 OK`, `404 Not Found` if link does not exist.
+- `POST /api/v1/incidents/{incident_id}/notes` - Add analyst investigation note.
+  - **Auth**: Required (`incidents.update` permission).
+  - **Payload**: `IncidentNoteCreateRequest` (`content` string between 1 and 10,000 characters).
+  - **Behavior**: Note author is strictly derived from authenticated session (`current_user.id`). Emits `INCIDENT_NOTE_CREATE` audit log with note body redacted for privacy.
+  - **Responses**: `201 Created` with `IncidentNoteResponse`.
+- `GET /api/v1/incidents/{incident_id}/timeline` - Unified investigation timeline.
+  - **Auth**: Required (`incidents.read` permission).
+  - **Behavior**: Aggregates alerts, direct evidence events, notes, assignments, and status transitions in chronological order. Explicitly distinguishes `occurred_at` (telemetry occurrence timestamp) from `action_at` (SOC investigation timestamp).
+  - **Responses**: `200 OK` with `IncidentTimelineResponse`.
 
 ### Detection Rules (`/api/v1/rules`)
 - `GET /api/v1/rules` - List all detection rules.

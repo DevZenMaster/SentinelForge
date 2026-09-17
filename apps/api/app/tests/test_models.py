@@ -6,7 +6,7 @@ from app.models import (
 
 
 def test_registered_tables_presence() -> None:
-    """Verify all 13 primary entities exist within the metadata."""
+    """Verify all 15 primary entities exist within the metadata."""
     expected_tables = {
         "users",
         "roles",
@@ -20,6 +20,8 @@ def test_registered_tables_presence() -> None:
         "alert_events",
         "incidents",
         "incident_alerts",
+        "incident_events",
+        "incident_notes",
         "audit_logs",
     }
     actual_tables = set(Base.metadata.tables.keys())
@@ -161,3 +163,65 @@ def test_alert_model_dedup_and_evidence_fields() -> None:
     assert ["correlation_key"] in index_column_sets
     assert ["rule_id", "created_at"] in index_column_sets
     assert ["correlation_key", "created_at"] in index_column_sets
+
+
+def test_incident_model_fields_and_indexes() -> None:
+    """Verify Incident table defines all Phase 6 lifecycle fields and indexes."""
+    table = Base.metadata.tables["incidents"]
+
+    expected_columns = [
+        "incident_id",
+        "title",
+        "description",
+        "severity",
+        "priority",
+        "status",
+        "assigned_to_user_id",
+        "created_by_user_id",
+        "resolved_by_user_id",
+        "resolved_at",
+        "resolution_category",
+        "resolution_notes",
+        "closed_by_user_id",
+        "closed_at",
+    ]
+    for col in expected_columns:
+        assert col in table.c, f"Column '{col}' missing from incidents table"
+
+    # Unique constraint or index on incident_id
+    assert table.c.incident_id.unique or any(
+        idx.unique and "incident_id" in [col.name for col in idx.columns] for idx in table.indexes
+    )
+
+    # Indexes on status, severity, priority
+    index_column_sets = [[c.name for c in idx.columns] for idx in table.indexes]
+    assert ["status", "created_at"] in index_column_sets
+    assert ["assigned_to_user_id", "status"] in index_column_sets
+    assert ["severity", "created_at"] in index_column_sets
+    assert ["priority", "created_at"] in index_column_sets
+
+
+def test_incident_events_foreign_key_actions() -> None:
+    """Verify IncidentEvent FK deletion behaviors (CASCADE on incident, RESTRICT on event)."""
+    table = Base.metadata.tables["incident_events"]
+    fk_map = {fk.parent.name: fk for fk in table.foreign_keys}
+
+    assert fk_map["incident_id"].ondelete == "CASCADE"
+    assert fk_map["event_id"].ondelete == "RESTRICT"
+
+    unique_constraints = [
+        [col.name for col in uq.columns] for uq in table.constraints if hasattr(uq, "columns")
+    ]
+    assert ["incident_id", "event_id"] in unique_constraints
+
+
+def test_incident_notes_foreign_key_actions_and_indexes() -> None:
+    """Verify IncidentNote FK deletion behavior (CASCADE on incident, RESTRICT on author)."""
+    table = Base.metadata.tables["incident_notes"]
+    fk_map = {fk.parent.name: fk for fk in table.foreign_keys}
+
+    assert fk_map["incident_id"].ondelete == "CASCADE"
+    assert fk_map["author_user_id"].ondelete == "RESTRICT"
+
+    index_column_sets = [[c.name for c in idx.columns] for idx in table.indexes]
+    assert ["incident_id", "created_at"] in index_column_sets

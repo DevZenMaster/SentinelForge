@@ -91,7 +91,14 @@ erDiagram
     
     incidents ||--o{ incident_alerts : groups
     alerts ||--o{ incident_alerts : belongs
+    incidents ||--o{ incident_events : links
+    events ||--o{ incident_events : evidenced_by
+    incidents ||--o{ incident_notes : contains
+    users ||--o{ incident_notes : authors
     users ||--o{ incidents : assigned_to
+    users ||--o{ incidents : created_by
+    users ||--o{ incidents : resolved_by
+    users ||--o{ incidents : closed_by
 ```
 
 ---
@@ -132,3 +139,17 @@ erDiagram
    - **Fault Isolation**: Rule evaluation failures are isolated via individual exception boundaries; errors never impede other rules or abort event ingestion.
    - **Execution Lifecycle**: Synchronous evaluation triggered during ingestion and reprocessing, plus on-demand evaluation via `POST /api/v1/events/{id}/detect`.
    - **Alert Management API**: `GET /api/v1/alerts` and `GET /api/v1/alerts/{id}` provide paginated inspection and forensic evidence exploration.
+8. **Incident Management & Security Investigation Subsystem (Phase 6)**:
+   - **Case File Architecture**: Incidents aggregate correlated alerts and raw telemetry into forensic investigation cases with human-readable sequential identifiers (`incident_id: INC-YYYY-NNNNNN`).
+   - **Severity vs. Priority Decoupling**: Distinguishes intrinsic security impact (`severity`: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) from triage urgency (`priority`: `LOW`, `MEDIUM`, `HIGH`, `URGENT`).
+   - **Strict Lifecycle State Machine**: Controlled transitions across `OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`, and `REOPENED`. Invalid state jumps return `400 Bad Request`.
+     - `OPEN -> IN_PROGRESS`: Triggered manually or automatically upon analyst assignment.
+     - `IN_PROGRESS -> RESOLVED`: Requires `resolution_category` (`TRUE_POSITIVE_BENIGN`, `TRUE_POSITIVE_MALICIOUS`, `FALSE_POSITIVE`, `DUPLICATE`, `OTHER`) and non-empty `resolution_notes`. Sets `resolved_at` and `resolved_by_user_id`.
+     - `RESOLVED -> CLOSED`: Requires dedicated `incidents.close` permission (`ADMIN` only by default). Sets `closed_at` and `closed_by_user_id`.
+     - `RESOLVED / CLOSED -> REOPENED`: Requires non-empty `reopen_reason`. Clears resolution and closure timestamps.
+   - **Multi-Alert & Direct Event Evidentiary Linking**:
+     - Alerts associated via `IncidentAlert` join table with duplicate prevention (`uq_incident_alerts_incident_alert`).
+     - Raw security events directly linked via `IncidentEvent` join table (`uq_incident_events_incident_event`) enforced with `ForeignKey("events.id", ondelete="RESTRICT")`, ensuring raw evidence cannot be dropped while linked to active cases.
+   - **Tamper-Evident Investigation Notes**: `IncidentNote` entries capture forensic commentary (1-10,000 characters), strictly attributing `author_user_id` from the authenticated server session. Note bodies are omitted from audit log payloads to preserve privacy while maintaining full action auditability.
+   - **Unified Investigation Timeline**: Chronologically interleaves alerts, direct evidence events, notes, assignments, and status transitions, strictly differentiating underlying telemetric occurrence timestamps (`occurred_at`) from SOC operational action timestamps (`action_at`).
+   - **Granular RBAC**: Enforces `incidents.read`, `incidents.create`, `incidents.update`, and `incidents.close` across role boundaries (`ADMIN` and `ANALYST` can triage/mutate; `VIEWER` is read-only).

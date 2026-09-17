@@ -60,7 +60,21 @@ See root [THREAT-MODEL.md](../../THREAT-MODEL.md) for the complete project-wide 
 * **Forensic Evidence Immutability**: All evidence associations (`alert_events`) use strict foreign key constraints (`ForeignKey("events.id", ondelete="RESTRICT")`), ensuring evidence logs cannot be deleted while referenced by active alerts. Ingested `raw_payload` data remains strictly read-only.
 * **Granular RBAC**: Alert search and inspection require `alerts.read` (accessible to `ADMIN`, `ANALYST`, and `VIEWER`); manual evaluation requires `detections.evaluate` (`ADMIN` and `ANALYST` only, `VIEWER` receives `403 Forbidden`).
 
-### 8. Acknowledged Residual Risks
+### 8. Incident Management Security Controls (Phase 6)
+* **Dedicated Case Closure Privilege Separation**: Closing an incident (`RESOLVED -> CLOSED`) is decoupled from general triage updates and restricted to `incidents.close` (`ADMIN` only by default). Analysts cannot unilaterally close cases without requisite privilege.
+* **Strict State Machine Validation**: State changes are enforced server-side. Arbitrary or cyclical jumps (e.g., `OPEN -> CLOSED` or `RESOLVED -> IN_PROGRESS` without reopening) are rejected with `400 Bad Request`.
+* **Mandatory Resolution & Reopen Rationale**: Transitioning to `RESOLVED` requires a verified `resolution_category` and non-empty `resolution_notes`. Transitioning to `REOPENED` requires a non-empty `reopen_reason`. This mitigates unverified ticket closure and undocumented reopening.
+* **Referential Integrity & Evidence Deletion Protection**: Direct event linkages in `incident_events` are enforced with `ForeignKey("events.id", ondelete="RESTRICT")`. Attempting to delete an ingested security event that is referenced as evidence in an incident is strictly prevented at the database level.
+* **Analyst Identity Attribution & Note Privacy**: Notes attached to incidents derive the author identity strictly from the verified server session (`current_user.id`), preventing impersonation of senior analysts. While note creation actions are logged to `audit_logs` (`INCIDENT_NOTE_CREATE`), note content is omitted from audit log payloads to prevent accidental leakage of sensitive investigative details or analyst commentary.
+* **Dual-Timestamp Timeline Integrity**: The timeline engine strictly separates telemetric occurrence timestamps (`occurred_at`) from operational triage and analyst action timestamps (`action_at`), preventing spoofing of incident chronology.
+* **Granular RBAC Enforcements**:
+  - `incidents.read`: Granted to `ADMIN`, `ANALYST`, and `VIEWER`.
+  - `incidents.create`: Granted to `ADMIN` and `ANALYST`. `VIEWER` receives `403 Forbidden`.
+  - `incidents.update`: Granted to `ADMIN` and `ANALYST`. `VIEWER` receives `403 Forbidden`.
+  - `incidents.close`: Granted to `ADMIN`. `ANALYST` and `VIEWER` receive `403 Forbidden`.
+
+### 9. Acknowledged Residual Risks
 * **Single-Process Memory Limiting**: In-memory rate limiting is process-bound. Distributed clusters in subsequent phases will integrate Redis for multi-node sliding window state.
 * **Database Admin Access**: A compromised PostgreSQL superuser could directly mutate database records, bypassing API-level immutability. Addressed via database-level privilege separation in production.
+* **Subjective Analyst Triage**: Resolution categorizations depend on analyst judgment; mitigated by mandatory resolution notes and peer audit trails.
 

@@ -29,6 +29,7 @@ PERMISSION_ALERTS_UPDATE: Final[str] = "alerts.update"
 PERMISSION_INCIDENTS_READ: Final[str] = "incidents.read"
 PERMISSION_INCIDENTS_CREATE: Final[str] = "incidents.create"
 PERMISSION_INCIDENTS_UPDATE: Final[str] = "incidents.update"
+PERMISSION_INCIDENTS_CLOSE: Final[str] = "incidents.close"
 
 PERMISSION_RULES_READ: Final[str] = "rules.read"
 PERMISSION_RULES_CREATE: Final[str] = "rules.create"
@@ -52,6 +53,7 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_INCIDENTS_READ: "View security incident tickets and timelines",
     PERMISSION_INCIDENTS_CREATE: "Escalate alerts and create incident cases",
     PERMISSION_INCIDENTS_UPDATE: "Update incident status, containment, and notes",
+    PERMISSION_INCIDENTS_CLOSE: "Close or reopen security incidents",
     PERMISSION_RULES_READ: "Inspect detection rules and threshold configurations",
     PERMISSION_RULES_CREATE: "Author and deploy new detection rules",
     PERMISSION_RULES_UPDATE: "Tune thresholds and enable/disable detection rules",
@@ -76,6 +78,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INCIDENTS_READ,
         PERMISSION_INCIDENTS_CREATE,
         PERMISSION_INCIDENTS_UPDATE,
+        PERMISSION_INCIDENTS_CLOSE,
         PERMISSION_RULES_READ,
         PERMISSION_RULES_CREATE,
         PERMISSION_RULES_UPDATE,
@@ -91,6 +94,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INCIDENTS_READ,
         PERMISSION_INCIDENTS_CREATE,
         PERMISSION_INCIDENTS_UPDATE,
+        PERMISSION_INCIDENTS_CLOSE,
         PERMISSION_RULES_READ,
         PERMISSION_RULES_UPDATE,
         PERMISSION_DETECTIONS_EVALUATE,
