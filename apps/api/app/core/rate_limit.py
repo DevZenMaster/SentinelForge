@@ -11,6 +11,7 @@ changing the dependency injection interface.
 """
 
 import threading
+import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 
@@ -55,8 +56,49 @@ class InMemorySlidingWindowLimiter:
             self._events.clear()
 
 
-# Global rate limiter instance
+# Global rate limiter instances
 auth_rate_limiter = InMemorySlidingWindowLimiter()
+event_rate_limiter = InMemorySlidingWindowLimiter()
+
+
+def enforce_event_ingest_rate_limit(request: Request, user_id: uuid.UUID | None = None) -> None:
+    """Enforce rate limits on event ingestion endpoints by client IP and authenticated user.
+
+    Raises HTTP 429 Too Many Requests if either the source IP or the authenticated user
+    exceeds the configured EVENTS_RATE_LIMIT_PER_MINUTE threshold.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    max_requests = settings.EVENTS_RATE_LIMIT_PER_MINUTE
+    window_seconds = 60
+
+    # 1. IP-based rate limiting
+    is_limited, retry_after = event_rate_limiter.is_rate_limited(
+        f"event:ip:{client_ip}", max_requests=max_requests, window_seconds=window_seconds
+    )
+    if is_limited:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Event ingestion rate limit exceeded for IP. Please try again in "
+                f"{retry_after} seconds."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # 2. User-based rate limiting
+    if user_id:
+        is_limited, retry_after = event_rate_limiter.is_rate_limited(
+            f"event:user:{user_id}", max_requests=max_requests, window_seconds=window_seconds
+        )
+        if is_limited:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Event ingestion rate limit exceeded for user. Please try again in "
+                    f"{retry_after} seconds."
+                ),
+                headers={"Retry-After": str(retry_after)},
+            )
 
 
 def enforce_login_rate_limit(request: Request, identifier: str | None = None) -> None:

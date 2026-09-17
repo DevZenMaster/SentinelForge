@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
-from app.core.rate_limit import auth_rate_limiter
+from app.core.rate_limit import auth_rate_limiter, event_rate_limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -59,6 +59,7 @@ async def test_db_session(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSessi
 async def async_client(test_engine: AsyncEngine) -> AsyncGenerator[AsyncClient]:
     """Provide an async HTTP test client with database dependency override targeting test_engine."""
     auth_rate_limiter.clear()
+    event_rate_limiter.clear()
     session_factory = async_sessionmaker(
         bind=test_engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -81,3 +82,4 @@ async def async_client(test_engine: AsyncEngine) -> AsyncGenerator[AsyncClient]:
 
     app.dependency_overrides.pop(get_db, None)
     auth_rate_limiter.clear()
+    event_rate_limiter.clear()

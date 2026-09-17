@@ -59,9 +59,27 @@ Errors return appropriate HTTP status codes (`400`, `401`, `403`, `404`, `422`, 
 - `GET /api/v1/auth/me` - Retrieve authenticated user profile, roles, and permissions.
 
 ### Events (`/api/v1/events`)
-- `POST /api/v1/events` - Ingest a single security event or a batch of events (Max 100 events / 1MB).
+- `POST /api/v1/events` - Ingest a single security event into the pipeline.
+  - **Auth**: Required (`events.create` permission; granted to `ADMIN` and `ANALYST`, blocked for `VIEWER` with `403 Forbidden`).
+  - **Headers**:
+    - `Idempotency-Key` *(optional)*: Client deduplication key (reconciles with `external_event_id`).
+    - `X-Request-ID` *(optional)*: Client correlation ID (sanitized against log injection regex `^[a-zA-Z0-9_\-:.]{1,64}$`).
+  - **Payload Limits**: Max 1MB (`MAX_EVENT_PAYLOAD_BYTES=1048576`); returns `413 Payload Too Large`.
+  - **Rate Limiting**: Evaluated per client IP and user (`EVENTS_RATE_LIMIT_PER_MINUTE=1000`); returns `429 Too Many Requests` with `Retry-After` header.
+  - **Validation**: Strict Pydantic v2 validation:
+    - `timestamp`: Timezone-aware UTC ISO 8601 (max 5 min in future, max 365 days in past).
+    - `source_ip` / `destination_ip`: Validated IPv4 / IPv6 via standard library `ipaddress` without DNS lookups.
+    - `destination_port`: Integer `0` to `65535`.
+    - `severity`: Controlled enum (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+    - `source_type`: Controlled enum (`generic`, `syslog`, `application`, `web`, `linux`, `windows`, `firewall`, `authentication`, `network`, `cloud`, `custom`).
+    - `raw_payload`: Verbatim raw JSON object preserved without mutation.
+  - **Response Semantics**:
+    - Initial ingestion: `201 Created` with `data.status = "ingested"`.
+    - Idempotent replay: `200 OK` with `data.status = "duplicate"` and original `event_id` and `ingested_at`.
+- `GET /api/v1/events/{id}` - Retrieve a normalized security event by UUID.
+  - **Auth**: Required (`events.read` permission; accessible to `ADMIN`, `ANALYST`, `VIEWER`).
+  - **Responses**: `200 OK` with `EventResponse`, `404 Not Found` if nonexistent.
 - `GET /api/v1/events` - Query normalized security events (paginated, multi-filter).
-- `GET /api/v1/events/{id}` - Retrieve details of a specific normalized event.
 
 ### Alerts (`/api/v1/alerts`)
 - `GET /api/v1/alerts` - List alerts (filtered by severity, status, rule, date range).

@@ -95,3 +95,14 @@ def test_session_model_token_hash_constraint() -> None:
         idx.unique and "session_token_hash" in [col.name for col in idx.columns]
         for idx in table.indexes
     )
+
+
+def test_event_model_external_event_id_constraint() -> None:
+    """Verify Event table metadata defines external_event_id with unique constraint."""
+    table = Base.metadata.tables["events"]
+    assert "external_event_id" in table.c
+    assert getattr(table.c.external_event_id.type, "length", None) == 128
+    assert table.c.external_event_id.unique or any(
+        idx.unique and "external_event_id" in [col.name for col in idx.columns]
+        for idx in table.indexes
+    )

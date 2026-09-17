@@ -68,9 +68,10 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
-    # Rate Limiting Settings
+    # Rate Limiting & Ingestion Constraints
     AUTH_RATE_LIMIT_PER_MINUTE: int = 10
     EVENTS_RATE_LIMIT_PER_MINUTE: int = 1000
+    MAX_EVENT_PAYLOAD_BYTES: int = Field(default=1048576, ge=1024, le=10485760)
 
     # Session Cookie & CSRF Security Settings
     SESSION_COOKIE_NAME: str = "sentinelforge_session"

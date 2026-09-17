@@ -8,6 +8,7 @@ Implements:
 """
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,8 @@ from app.core.config import settings
 
 logger = logging.getLogger("sentinelforge.access")
 
+SAFE_REQUEST_ID_REGEX = re.compile(r"^[a-zA-Z0-9_\-:.]{1,64}$")
+
 
 class RequestCorrelationMiddleware(BaseHTTPMiddleware):
     """Middleware attaching request_id and logging structured access metrics."""
@@ -28,10 +31,41 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        # Extract or generate unique request ID
+        # Extract or generate unique request ID, sanitizing against header/log injection
         incoming_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID")
-        request_id = incoming_id if incoming_id else f"req-{uuid.uuid4().hex[:16]}"
+        if incoming_id and SAFE_REQUEST_ID_REGEX.match(incoming_id):
+            request_id = incoming_id
+        else:
+            request_id = f"req-{uuid.uuid4().hex[:16]}"
         request.state.request_id = request_id
+
+        # Enforce maximum payload size early via Content-Length header
+        content_length_header = request.headers.get("content-length")
+        if content_length_header:
+            try:
+                content_length = int(content_length_header)
+                if content_length > settings.MAX_EVENT_PAYLOAD_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "data": None,
+                            "meta": {
+                                "timestamp": datetime.now(UTC).isoformat(),
+                                "request_id": str(request_id),
+                            },
+                            "error": {
+                                "code": "PAYLOAD_TOO_LARGE",
+                                "message": (
+                                    f"Request payload exceeds maximum permitted size "
+                                    f"of {settings.MAX_EVENT_PAYLOAD_BYTES} bytes."
+                                ),
+                                "details": None,
+                            },
+                        },
+                        headers={"X-Request-ID": str(request_id)},
+                    )
+            except ValueError:
+                pass
 
         start_time = time.perf_counter()
 

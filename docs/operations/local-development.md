@@ -56,8 +56,11 @@
 
 8. Run test suite, linters, and type checker:
    ```bash
-   # Run all unit, integration, and security tests (46 tests)
+   # Run all unit, integration, and security tests (67 tests)
    PYTHONPATH=. pytest -v
+
+   # Run Event Ingestion tests specifically
+   PYTHONPATH=. pytest -v app/tests/test_events.py
 
    # Run Ruff linter and code formatter
    ruff check app

@@ -21,6 +21,11 @@ class Event(Base, UUIDPrimaryKeyMixin):
 
     __tablename__ = "events"
 
+    # Optional client-supplied or idempotency identifier
+    external_event_id: Mapped[str | None] = mapped_column(
+        String(128), unique=True, index=True, nullable=True
+    )
+
     # Ingestion & event timestamps (always timezone-aware UTC)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     ingested_at: Mapped[datetime] = mapped_column(
@@ -29,14 +34,14 @@ class Event(Base, UUIDPrimaryKeyMixin):
 
     # Core source telemetry
     source: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(64), default="generic", nullable=False)
     source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     destination_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     destination_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Event classification & taxonomy
     event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), default="observed", nullable=False, index=True)
     username: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     severity: Mapped[str] = mapped_column(String(16), default="INFO", nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)

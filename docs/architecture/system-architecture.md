@@ -98,17 +98,24 @@ erDiagram
 
 ## 4. Ingestion & Detection Lifecycle
 
-1. **Ingestion**: Client sends batch or single event payload via `POST /api/v1/events`.
-2. **Validation**: Payload validated against Pydantic schema (types, field bounds, valid event taxonomies).
-3. **Normalization**:
-   - Timestamp parsed and cast to UTC ISO-8601.
-   - IP representations canonicalized.
-   - Action names converted to lowercase slug standard.
-4. **Persistence**: Event saved to PostgreSQL `events` table with generated UUID and indexing.
-5. **Detection Evaluation**:
-   - Active rules relevant to the `event_type` and `action` are loaded.
-   - Sliding window criteria are evaluated against recent event history.
-   - If conditions are met:
-     - An `Alert` record is generated with severity, rule metadata, and timestamps.
-     - Evidence rows are created in `alert_events` linking all matching events.
-6. **Audit & Alerting**: Alert enters `OPEN` status and is visible on analyst dashboard.
+1. **Ingestion Request**: Authenticated client sends single event payload via `POST /api/v1/events` (guarded by `events.create` permission; ANALYST and ADMIN allowed, VIEWER rejected with 403).
+2. **Security Controls & Rate Limiting**:
+   - Request correlation ID extracted and sanitized against regex `^[a-zA-Z0-9_\-:.]{1,64}$` to prevent log injection.
+   - Payload size checked (`Content-Length <= MAX_EVENT_PAYLOAD_BYTES`, default 1MB; returns 413).
+   - Sliding-window rate limiting applied per IP and user (`EVENTS_RATE_LIMIT_PER_MINUTE=1000`; returns 429).
+3. **Strict Validation**:
+   - Timezone-aware UTC timestamp validated within sanity bounds (future <= 5m, past <= 365d).
+   - IPv4 / IPv6 addresses validated via standard library `ipaddress` without DNS lookups.
+   - Destination port bounds verified (0-65535).
+   - Controlled severity enum and supported source types enforced.
+4. **Idempotency & Concurrency**:
+   - Checked via `external_event_id` or `Idempotency-Key` header.
+   - In-process coordination and database-level `UNIQUE` index on `external_event_id` prevent duplicate persistence.
+   - Replay of existing `external_event_id` returns `200 OK` with `status: "duplicate"` and original `event_id` and `ingested_at`.
+5. **Persistence & Evidentiary Integrity**:
+   - Full original log payload stored verbatim in `raw_payload` (PostgreSQL `JSONB`) without stripping or mutation.
+   - Event committed to PostgreSQL `events` table with compound temporal indexes.
+   - Append-only audit log records `EVENT_INGEST_SUCCESS` or `EVENT_INGEST_DUPLICATE` (sanitized without raw payload).
+6. **Downstream Pipeline (Phases 4 & 5)**:
+   - Phase 4: Event Normalization (field extraction, taxonomy mapping).
+   - Phase 5: Detection Engine (sliding window temporal queries against normalized events, alert generation).
