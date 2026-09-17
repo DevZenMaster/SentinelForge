@@ -21,8 +21,8 @@ from app.core.config import settings
 from app.core.rbac import (
     ALL_PERMISSIONS,
     DEFAULT_ROLE_PERMISSIONS,
+    PERMISSION_ALERTS_READ,
     PERMISSION_ALERTS_UPDATE,
-    PERMISSION_EVENTS_READ,
     PERMISSION_USERS_CREATE,
     ROLE_ADMIN,
     ROLE_ANALYST,
@@ -41,9 +41,9 @@ rbac_test_router = APIRouter(prefix="/test-rbac", tags=["RBAC Test"])
 
 @rbac_test_router.get("/viewer-action")
 async def viewer_action_route(
-    user: User = Depends(require_permission(PERMISSION_EVENTS_READ)),
+    user: User = Depends(require_permission(PERMISSION_ALERTS_READ)),
 ) -> dict[str, str]:
-    return {"status": "ok", "action": PERMISSION_EVENTS_READ, "user": user.username}
+    return {"status": "ok", "action": PERMISSION_ALERTS_READ, "user": user.username}
 
 
 @rbac_test_router.get("/analyst-action")

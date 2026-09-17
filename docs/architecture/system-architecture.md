@@ -116,6 +116,13 @@ erDiagram
    - Full original log payload stored verbatim in `raw_payload` (PostgreSQL `JSONB`) without stripping or mutation.
    - Event committed to PostgreSQL `events` table with compound temporal indexes.
    - Append-only audit log records `EVENT_INGEST_SUCCESS` or `EVENT_INGEST_DUPLICATE` (sanitized without raw payload).
-6. **Downstream Pipeline (Phases 4 & 5)**:
-   - Phase 4: Event Normalization (field extraction, taxonomy mapping).
-   - Phase 5: Detection Engine (sliding window temporal queries against normalized events, alert generation).
+6. **Normalization & Canonicalization Pipeline (Phase 4)**:
+   - **Deterministic Dispatcher**: Dispatches event to specialized registered parser (`LinuxAuthParser`, `WebParser`) with fallback to `GenericParser`.
+   - **Evidence Immutability**: The ingested `raw_payload` (JSONB) is treated as strictly read-only and preserved verbatim.
+   - **Canonical Taxonomy**: Extracts canonical attributes (`outcome`, `event_type`, `action`, `severity`, `source_ip`, `destination_ip`, `source_port`, `destination_port`, `username`, `message`) directly into query-indexed table columns.
+   - **Extensible Attributes**: Preserves unmapped telemetry in `attributes` (PostgreSQL `JSONB`).
+   - **Traceability & Diagnostics**: Stores `parser_name`, `parser_version`, `normalization_version`, `normalized_at`, `normalization_status` (`NORMALIZED`, `PARTIAL`, `FAILED`), and diagnostic `normalization_errors`.
+   - **Reprocessing**: `POST /api/v1/events/{id}/normalize` allows analysts to re-evaluate raw telemetry as parser capabilities improve.
+7. **Detection Engine (Phase 5)**:
+   - Sliding window temporal queries against canonical columns and compound indexes (`ix_events_event_type_action_timestamp`, `ix_events_timestamp_source_ip`, `ix_events_timestamp_username`).
+   - Evaluates canonical outcomes (`failure`, `success`) to generate correlated `Alert` entities.

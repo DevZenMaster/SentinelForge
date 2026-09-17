@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.event import Event
+from app.normalization import apply_normalization_to_event, normalize_event
 from app.schemas.event import EventCreateRequest
 from app.services.auth import record_audit_log
 
@@ -111,6 +112,10 @@ async def ingest_security_event(
             metadata_=event_in.metadata,
         )
 
+        # Run deterministic normalization pipeline
+        norm_result = normalize_event(new_event)
+        apply_normalization_to_event(new_event, norm_result)
+
         db.add(new_event)
 
         # 3. Commit with database uniqueness race handling
@@ -168,11 +173,15 @@ async def ingest_security_event(
             "source_type": new_event.source_type,
             "event_type": new_event.event_type,
             "severity": new_event.severity,
+            "outcome": new_event.outcome,
+            "normalization_status": new_event.normalization_status,
+            "parser_name": new_event.parser_name,
         },
     )
 
     logger.info(
-        f"Event successfully ingested: id={new_event.id}",
+        f"Event successfully ingested: id={new_event.id}, "
+        f"norm_status={new_event.normalization_status}",
         extra={
             "request_id": request_id,
             "event_id": str(new_event.id),
@@ -181,6 +190,8 @@ async def ingest_security_event(
             "event_type": new_event.event_type,
             "severity": new_event.severity,
             "status": "ingested",
+            "normalization_status": new_event.normalization_status,
+            "parser_name": new_event.parser_name,
         },
     )
 
@@ -192,3 +203,59 @@ async def get_event_by_id(db: AsyncSession, event_id: uuid.UUID) -> Event | None
     stmt = select(Event).where(Event.id == event_id)
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def reprocess_event_normalization(
+    db: AsyncSession,
+    event_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
+    request_id: str | None = None,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+) -> Event | None:
+    """Reprocess normalization on an existing event.
+
+    Re-runs normalization on the preserved raw_payload, updates canonical fields,
+    and records an audit log entry.
+    """
+    event = await get_event_by_id(db, event_id)
+    if not event:
+        return None
+
+    old_status = event.normalization_status
+    norm_result = normalize_event(event)
+    apply_normalization_to_event(event, norm_result)
+
+    await db.commit()
+    await db.refresh(event)
+
+    await record_audit_log(
+        db=db,
+        action="EVENT_NORMALIZATION_REPROCESSED",
+        actor_user_id=actor_user_id,
+        resource_type="event",
+        resource_id=str(event.id),
+        request_id=request_id,
+        source_ip=client_ip,
+        user_agent=user_agent,
+        new_value={
+            "old_status": old_status,
+            "new_status": event.normalization_status,
+            "parser_name": event.parser_name,
+            "parser_version": event.parser_version,
+            "outcome": event.outcome,
+        },
+    )
+
+    logger.info(
+        f"Event normalization reprocessed: id={event.id}, status={event.normalization_status}",
+        extra={
+            "request_id": request_id,
+            "event_id": str(event.id),
+            "normalization_status": event.normalization_status,
+            "parser_name": event.parser_name,
+            "outcome": event.outcome,
+        },
+    )
+
+    return event

@@ -21,6 +21,7 @@ PERMISSION_USERS_DELETE: Final[str] = "users.delete"
 
 PERMISSION_EVENTS_READ: Final[str] = "events.read"
 PERMISSION_EVENTS_CREATE: Final[str] = "events.create"
+PERMISSION_EVENTS_NORMALIZE: Final[str] = "events.normalize"
 
 PERMISSION_ALERTS_READ: Final[str] = "alerts.read"
 PERMISSION_ALERTS_UPDATE: Final[str] = "alerts.update"
@@ -43,6 +44,7 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_USERS_DELETE: "Deactivate or remove user accounts",
     PERMISSION_EVENTS_READ: "Search and inspect normalized security events",
     PERMISSION_EVENTS_CREATE: "Ingest and submit security events to the SIEM pipeline",
+    PERMISSION_EVENTS_NORMALIZE: "Reprocess event normalization and parser evaluation",
     PERMISSION_ALERTS_READ: "View detection alerts and evidence links",
     PERMISSION_ALERTS_UPDATE: "Triage and update alert lifecycle status",
     PERMISSION_INCIDENTS_READ: "View security incident tickets and timelines",
@@ -65,6 +67,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_USERS_DELETE,
         PERMISSION_EVENTS_READ,
         PERMISSION_EVENTS_CREATE,
+        PERMISSION_EVENTS_NORMALIZE,
         PERMISSION_ALERTS_READ,
         PERMISSION_ALERTS_UPDATE,
         PERMISSION_INCIDENTS_READ,
@@ -78,6 +81,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
     ROLE_ANALYST: [
         PERMISSION_EVENTS_READ,
         PERMISSION_EVENTS_CREATE,
+        PERMISSION_EVENTS_NORMALIZE,
         PERMISSION_ALERTS_READ,
         PERMISSION_ALERTS_UPDATE,
         PERMISSION_INCIDENTS_READ,
@@ -88,7 +92,6 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_AUDIT_READ,
     ],
     ROLE_VIEWER: [
-        PERMISSION_EVENTS_READ,
         PERMISSION_ALERTS_READ,
         PERMISSION_INCIDENTS_READ,
     ],

@@ -736,9 +736,16 @@ async def test_get_event_by_id_lifecycle(
     assert create_resp.status_code == 201
     event_id = create_resp.json()["data"]["event_id"]
 
-    # 1. VIEWER can fetch event (has events.read)
-    get_resp = await async_client.get(
+    # 1. VIEWER cannot fetch event (events.read restricted to ANALYST and ADMIN) -> 403
+    viewer_resp = await async_client.get(
         f"/api/v1/events/{event_id}", headers=auth_headers(viewer_token)
+    )
+    assert viewer_resp.status_code == 403
+    assert viewer_resp.json()["error"]["code"] == "FORBIDDEN"
+
+    # 2. ANALYST can fetch event (has events.read) -> 200 OK
+    get_resp = await async_client.get(
+        f"/api/v1/events/{event_id}", headers=auth_headers(analyst_token)
     )
     assert get_resp.status_code == 200
     event_data = get_resp.json()["data"]
@@ -749,11 +756,15 @@ async def test_get_event_by_id_lifecycle(
     assert event_data["severity"] == "HIGH"
     assert event_data["raw_payload"]["namespace"] == "prod"
     assert event_data["metadata"]["cluster_id"] == "us-east-1"
+    assert event_data["normalization_status"] in ("NORMALIZED", "PARTIAL")
+    assert event_data["parser_name"] is not None
+    assert "outcome" in event_data
+    assert "attributes" in event_data
 
-    # 2. Nonexistent UUID returns 404
+    # 3. Nonexistent UUID returns 404
     fake_uuid = "00000000-0000-0000-0000-000000000000"
     missing_resp = await async_client.get(
-        f"/api/v1/events/{fake_uuid}", headers=auth_headers(viewer_token)
+        f"/api/v1/events/{fake_uuid}", headers=auth_headers(analyst_token)
     )
     assert missing_resp.status_code == 404
     assert missing_resp.json()["error"]["code"] == "NOT_FOUND"

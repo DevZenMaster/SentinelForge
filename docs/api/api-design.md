@@ -77,8 +77,12 @@ Errors return appropriate HTTP status codes (`400`, `401`, `403`, `404`, `422`, 
     - Initial ingestion: `201 Created` with `data.status = "ingested"`.
     - Idempotent replay: `200 OK` with `data.status = "duplicate"` and original `event_id` and `ingested_at`.
 - `GET /api/v1/events/{id}` - Retrieve a normalized security event by UUID.
-  - **Auth**: Required (`events.read` permission; accessible to `ADMIN`, `ANALYST`, `VIEWER`).
-  - **Responses**: `200 OK` with `EventResponse`, `404 Not Found` if nonexistent.
+  - **Auth**: Required (`events.read` permission; accessible to `ADMIN` and `ANALYST`. `VIEWER` receives `403 Forbidden`).
+  - **Responses**: `200 OK` with canonical `EventResponse` (including `outcome`, `normalization_status`, `parser_name`, `attributes`, etc.), `404 Not Found` if nonexistent.
+- `POST /api/v1/events/{id}/normalize` - Reprocess normalization for a single security event.
+  - **Auth**: Required (`events.normalize` permission; accessible to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Behavior**: Re-evaluates the preserved `raw_payload` against registered parsers, updates canonical fields, and emits audit event `EVENT_NORMALIZATION_REPROCESSED`.
+  - **Responses**: `200 OK` with re-normalized `EventResponse`, `404 Not Found` if nonexistent.
 - `GET /api/v1/events` - Query normalized security events (paginated, multi-filter).
 
 ### Alerts (`/api/v1/alerts`)

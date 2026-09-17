@@ -37,20 +37,35 @@ class Event(Base, UUIDPrimaryKeyMixin):
     source_type: Mapped[str] = mapped_column(String(64), default="generic", nullable=False)
     source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     destination_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    source_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     destination_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Event classification & taxonomy
+    # Event classification & taxonomy (derived canonical fields)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(64), default="observed", nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(16), default="unknown", nullable=False, index=True)
     username: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     severity: Mapped[str] = mapped_column(String(16), default="INFO", nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Normalization pipeline tracking & versioning
+    normalization_status: Mapped[str] = mapped_column(
+        String(16), default="PENDING", nullable=False, index=True
+    )
+    parser_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parser_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    normalization_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    normalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    normalization_errors: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_COMPAT, default=list, nullable=False
+    )
+
     # Traceability & audit
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    # Payloads
+    # Payloads: verbatim raw evidence and extracted source-specific attributes
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_COMPAT, nullable=False)
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON_COMPAT, default=dict, nullable=False)
     metadata_: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON_COMPAT, default=dict, nullable=False
     )
@@ -66,4 +81,5 @@ class Event(Base, UUIDPrimaryKeyMixin):
         Index("ix_events_username_timestamp", "username", "timestamp"),
         Index("ix_events_event_type_timestamp", "event_type", "timestamp"),
         Index("ix_events_action_timestamp", "action", "timestamp"),
+        Index("ix_events_event_type_action_timestamp", "event_type", "action", "timestamp"),
     )

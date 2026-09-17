@@ -39,33 +39,61 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
             request_id = f"req-{uuid.uuid4().hex[:16]}"
         request.state.request_id = request_id
 
-        # Enforce maximum payload size early via Content-Length header
-        content_length_header = request.headers.get("content-length")
-        if content_length_header:
-            try:
-                content_length = int(content_length_header)
-                if content_length > settings.MAX_EVENT_PAYLOAD_BYTES:
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "data": None,
-                            "meta": {
-                                "timestamp": datetime.now(UTC).isoformat(),
-                                "request_id": str(request_id),
+        # Enforce maximum payload size
+        # (Content-Length check or streaming check for chunked/missing header)
+        if request.method in ("POST", "PUT", "PATCH"):
+            content_length_header = request.headers.get("content-length")
+            if content_length_header:
+                try:
+                    content_length = int(content_length_header)
+                    if content_length > settings.MAX_EVENT_PAYLOAD_BYTES:
+                        return JSONResponse(
+                            status_code=413,
+                            content={
+                                "data": None,
+                                "meta": {
+                                    "timestamp": datetime.now(UTC).isoformat(),
+                                    "request_id": str(request_id),
+                                },
+                                "error": {
+                                    "code": "PAYLOAD_TOO_LARGE",
+                                    "message": (
+                                        f"Request payload exceeds maximum permitted size "
+                                        f"of {settings.MAX_EVENT_PAYLOAD_BYTES} bytes."
+                                    ),
+                                    "details": None,
+                                },
                             },
-                            "error": {
-                                "code": "PAYLOAD_TOO_LARGE",
-                                "message": (
-                                    f"Request payload exceeds maximum permitted size "
-                                    f"of {settings.MAX_EVENT_PAYLOAD_BYTES} bytes."
-                                ),
-                                "details": None,
+                            headers={"X-Request-ID": str(request_id)},
+                        )
+                except ValueError:
+                    pass
+            else:
+                # Enforce streaming body size limit to protect against unbounded chunked transfers
+                body = bytearray()
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > settings.MAX_EVENT_PAYLOAD_BYTES:
+                        return JSONResponse(
+                            status_code=413,
+                            content={
+                                "data": None,
+                                "meta": {
+                                    "timestamp": datetime.now(UTC).isoformat(),
+                                    "request_id": str(request_id),
+                                },
+                                "error": {
+                                    "code": "PAYLOAD_TOO_LARGE",
+                                    "message": (
+                                        f"Request payload exceeds maximum permitted size "
+                                        f"of {settings.MAX_EVENT_PAYLOAD_BYTES} bytes."
+                                    ),
+                                    "details": None,
+                                },
                             },
-                        },
-                        headers={"X-Request-ID": str(request_id)},
-                    )
-            except ValueError:
-                pass
+                            headers={"X-Request-ID": str(request_id)},
+                        )
+                request._body = bytes(body)
 
         start_time = time.perf_counter()
 

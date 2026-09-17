@@ -106,3 +106,29 @@ def test_event_model_external_event_id_constraint() -> None:
         idx.unique and "external_event_id" in [col.name for col in idx.columns]
         for idx in table.indexes
     )
+
+
+def test_event_model_normalization_fields_and_indexes() -> None:
+    """Verify Event table metadata defines all Phase 4 canonical fields and indexes."""
+    table = Base.metadata.tables["events"]
+
+    # Canonical & tracking columns presence
+    expected_columns = [
+        "source_port",
+        "outcome",
+        "normalization_status",
+        "parser_name",
+        "parser_version",
+        "normalization_version",
+        "normalized_at",
+        "normalization_errors",
+        "attributes",
+    ]
+    for col in expected_columns:
+        assert col in table.c, f"Column '{col}' missing from events table"
+
+    # Compound index check
+    index_column_sets = [[c.name for c in idx.columns] for idx in table.indexes]
+    assert ["event_type", "action", "timestamp"] in index_column_sets
+    assert ["outcome"] in index_column_sets
+    assert ["normalization_status"] in index_column_sets

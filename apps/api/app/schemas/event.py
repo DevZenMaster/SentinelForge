@@ -228,6 +228,19 @@ class EventCreateRequest(BaseModel):
                 f"raw_payload size ({len(serialized)} bytes) exceeds maximum "
                 f"permitted payload limit of {settings.MAX_EVENT_PAYLOAD_BYTES} bytes"
             )
+
+        # Defensive recursion guard against deeply nested payloads (DoS prevention)
+        def _check_depth(obj: Any, current_depth: int = 1, max_depth: int = 8) -> None:
+            if current_depth > max_depth:
+                raise ValueError(f"raw_payload exceeds maximum nesting depth of {max_depth}")
+            if isinstance(obj, dict):
+                for val in obj.values():
+                    _check_depth(val, current_depth + 1, max_depth)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _check_depth(item, current_depth + 1, max_depth)
+
+        _check_depth(v)
         return v
 
 
@@ -261,12 +274,21 @@ class EventResponse(BaseModel):
     source_type: str = Field(...)
     source_ip: str | None = Field(default=None)
     destination_ip: str | None = Field(default=None)
+    source_port: int | None = Field(default=None)
     destination_port: int | None = Field(default=None)
     event_type: str = Field(...)
     action: str = Field(...)
+    outcome: str = Field(default="unknown")
     username: str | None = Field(default=None)
     severity: str = Field(...)
     message: str | None = Field(default=None)
     request_id: str | None = Field(default=None)
     raw_payload: dict[str, Any] = Field(...)
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
+    normalization_status: str = Field(default="PENDING")
+    parser_name: str | None = Field(default=None)
+    parser_version: str | None = Field(default=None)
+    normalization_version: str | None = Field(default=None)
+    normalized_at: datetime | None = Field(default=None)
+    normalization_errors: list[dict[str, Any]] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)

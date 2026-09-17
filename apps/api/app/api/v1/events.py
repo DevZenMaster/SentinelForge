@@ -14,12 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
 from app.core.rate_limit import enforce_event_ingest_rate_limit
-from app.core.rbac import PERMISSION_EVENTS_CREATE, PERMISSION_EVENTS_READ
+from app.core.rbac import (
+    PERMISSION_EVENTS_CREATE,
+    PERMISSION_EVENTS_NORMALIZE,
+    PERMISSION_EVENTS_READ,
+)
 from app.db.session import get_db
 from app.models import User
 from app.schemas.event import EventCreateRequest, EventIngestData, EventResponse
 from app.schemas.response import APIResponse, ResponseMetadata
-from app.services.event import get_event_by_id, ingest_security_event
+from app.services.event import (
+    get_event_by_id,
+    ingest_security_event,
+    reprocess_event_normalization,
+)
 
 router = APIRouter(prefix="/events", tags=["Events"])
 
@@ -135,6 +143,57 @@ async def get_event(
         event.ingested_at = event.ingested_at.replace(tzinfo=UTC)
     if event.timestamp.tzinfo is None:
         event.timestamp = event.timestamp.replace(tzinfo=UTC)
+    if event.normalized_at and event.normalized_at.tzinfo is None:
+        event.normalized_at = event.normalized_at.replace(tzinfo=UTC)
+
+    return APIResponse[EventResponse](
+        data=EventResponse.model_validate(event),
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.post(
+    "/{event_id}/normalize",
+    response_model=APIResponse[EventResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Reprocess Event Normalization",
+)
+async def reprocess_event(
+    event_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_EVENTS_NORMALIZE))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[EventResponse]:
+    """Reprocess normalization for a single security event.
+
+    Re-evaluates the preserved raw_payload against the parser registry,
+    updates canonical fields, logs an audit entry, and returns the updated event.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("User-Agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    event = await reprocess_event_normalization(
+        db=db,
+        event_id=event_id,
+        actor_user_id=current_user.id,
+        request_id=request_id,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Security event with ID '{event_id}' not found.",
+        )
+
+    if event.ingested_at.tzinfo is None:
+        event.ingested_at = event.ingested_at.replace(tzinfo=UTC)
+    if event.timestamp.tzinfo is None:
+        event.timestamp = event.timestamp.replace(tzinfo=UTC)
+    if event.normalized_at and event.normalized_at.tzinfo is None:
+        event.normalized_at = event.normalized_at.replace(tzinfo=UTC)
 
     return APIResponse[EventResponse](
         data=EventResponse.model_validate(event),
