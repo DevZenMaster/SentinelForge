@@ -85,10 +85,10 @@ class IncidentCreateRequest(BaseModel):
         default=None, description="Initial assigned analyst"
     )
     alert_ids: list[uuid.UUID] | None = Field(
-        default=None, description="Optional initial alerts to correlate"
+        default=None, max_length=100, description="Optional initial alerts to correlate"
     )
     event_ids: list[uuid.UUID] | None = Field(
-        default=None, description="Optional initial event evidence to link"
+        default=None, max_length=500, description="Optional initial event evidence to link"
     )
     initial_note: str | None = Field(
         default=None, min_length=1, max_length=10000, description="Optional opening note"

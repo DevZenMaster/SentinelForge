@@ -5,11 +5,12 @@ alert correlation, direct forensic event evidence linkage, notes management,
 and unified chronological timeline aggregation.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,6 +40,7 @@ from app.schemas.incident import (
 from app.services.auth import record_audit_log
 
 logger = logging.getLogger("sentinelforge.incident")
+_incident_create_lock = asyncio.Lock()
 
 
 # ==============================================================================
@@ -79,13 +81,13 @@ class IncidentValidationError(Exception):
 # ==============================================================================
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "OPEN": {"IN_PROGRESS", "RESOLVED", "CLOSED"},
-    "IN_PROGRESS": {"RESOLVED", "CLOSED"},
-    "RESOLVED": {"CLOSED", "IN_PROGRESS"},
+    "OPEN": {"IN_PROGRESS"},
+    "IN_PROGRESS": {"RESOLVED", "OPEN"},
+    "RESOLVED": {"CLOSED", "REOPENED"},
     "CLOSED": {"REOPENED"},
     "REOPENED": {"IN_PROGRESS", "RESOLVED"},
     # Legacy alias support
-    "INVESTIGATING": {"IN_PROGRESS", "RESOLVED", "CLOSED"},
+    "INVESTIGATING": {"IN_PROGRESS", "RESOLVED"},
 }
 
 
@@ -123,28 +125,40 @@ def _user_summary(user: User | None) -> UserSummaryResponse | None:
 
 
 async def generate_incident_id(db: AsyncSession, year: int | None = None) -> str:
-    """Generate sequential, human-readable incident ticket ID (e.g. INC-2026-000001)."""
+    """Generate sequential, human-readable incident ticket ID (e.g. INC-2026-000001).
+
+    In PostgreSQL, serializes generation per year via transactional advisory locking.
+    Extracts the highest existing numeric sequence suffix, ignoring non-numeric fallback IDs.
+    """
     if year is None:
         year = datetime.now(UTC).year
     prefix = f"INC-{year}-"
+
+    # In PostgreSQL, acquire transaction advisory lock to serialize generation per year
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"incident_seq_{year}"},
+        )
+
     stmt = (
         select(Incident.incident_id)
         .where(Incident.incident_id.like(f"{prefix}%"))
         .order_by(Incident.incident_id.desc())
-        .limit(1)
     )
     result = await db.execute(stmt)
-    last_id = result.scalar_one_or_none()
+    existing_ids = result.scalars().all()
 
-    if last_id and last_id.startswith(prefix):
-        try:
-            seq_part = last_id[len(prefix) :]
-            seq_num = int(seq_part) + 1
-        except (ValueError, IndexError):
-            seq_num = 1
-    else:
-        seq_num = 1
+    max_num = 0
+    for inc_id in existing_ids:
+        if inc_id.startswith(prefix):
+            suffix = inc_id[len(prefix) :]
+            if suffix.isdigit():
+                val = int(suffix)
+                if val > max_num:
+                    max_num = val
 
+    seq_num = max_num + 1
     return f"{prefix}{seq_num:06d}"
 
 
@@ -187,31 +201,32 @@ async def create_incident(
             if not (await db.execute(e_stmt)).scalar_one_or_none():
                 raise EventNotFoundError(f"Event {event_id} not found")
 
-    # 4. Generate incident_id with retry on race condition
-    max_retries = 3
-    for attempt in range(max_retries):
-        incident_id = await generate_incident_id(db)
-        incident = Incident(
-            incident_id=incident_id,
-            title=payload.title.strip(),
-            description=payload.description.strip(),
-            severity=payload.severity.value,
-            priority=payload.priority.value,
-            status=IncidentStatus.OPEN.value,
-            created_by_user_id=created_by_user_id,
-            assigned_to_user_id=payload.assigned_to_user_id,
-            notes=[],
-        )
-        db.add(incident)
-        try:
-            await db.flush()
-            break
-        except IntegrityError:
-            await db.rollback()
-            if attempt == max_retries - 1:
-                raise IncidentValidationError(
-                    "Failed to generate unique incident ID due to concurrent inserts"
-                ) from None
+    # 4. Generate incident_id with retry on race condition using savepoint
+    max_retries = 5
+    async with _incident_create_lock:
+        for attempt in range(max_retries):
+            incident_id = await generate_incident_id(db)
+            incident = Incident(
+                incident_id=incident_id,
+                title=payload.title.strip(),
+                description=payload.description.strip(),
+                severity=payload.severity.value,
+                priority=payload.priority.value,
+                status=IncidentStatus.OPEN.value,
+                created_by_user_id=created_by_user_id,
+                assigned_to_user_id=payload.assigned_to_user_id,
+                notes=[],
+            )
+            try:
+                db.add(incident)
+                await db.commit()
+                break
+            except IntegrityError:
+                await db.rollback()
+                if attempt == max_retries - 1:
+                    raise IncidentValidationError(
+                        "Failed to generate unique incident ID due to concurrent inserts"
+                    ) from None
 
     # 5. Attach initial alerts
     if payload.alert_ids:
@@ -246,7 +261,6 @@ async def create_incident(
         )
 
     await db.commit()
-    await db.refresh(incident)
 
     # 8. Audit logging
     assignee_str = str(incident.assigned_to_user_id) if incident.assigned_to_user_id else None
@@ -313,7 +327,9 @@ async def create_incident(
     return await get_incident_by_identifier(db, str(incident.id))
 
 
-async def get_incident_by_identifier(db: AsyncSession, identifier: str) -> Incident:
+async def get_incident_by_identifier(
+    db: AsyncSession, identifier: str, for_update: bool = False
+) -> Incident:
     """Retrieve an incident by either internal UUID or human-readable ticket ID."""
     stmt = select(Incident).options(
         selectinload(Incident.assigned_to_user),
@@ -321,9 +337,14 @@ async def get_incident_by_identifier(db: AsyncSession, identifier: str) -> Incid
         selectinload(Incident.resolved_by_user),
         selectinload(Incident.closed_by_user),
         selectinload(Incident.incident_alerts).selectinload(IncidentAlert.alert),
+        selectinload(Incident.incident_alerts).selectinload(IncidentAlert.added_by_user),
         selectinload(Incident.incident_events).selectinload(IncidentEvent.event),
+        selectinload(Incident.incident_events).selectinload(IncidentEvent.added_by_user),
         selectinload(Incident.incident_notes).selectinload(IncidentNote.author),
     )
+
+    if for_update:
+        stmt = stmt.with_for_update()
 
     try:
         val_uuid = uuid.UUID(identifier)
@@ -342,9 +363,9 @@ async def list_incidents(
     db: AsyncSession,
     page: int = 1,
     limit: int = 50,
-    status: str | None = None,
-    severity: str | None = None,
-    priority: str | None = None,
+    status: IncidentStatus | str | None = None,
+    severity: IncidentSeverity | str | None = None,
+    priority: IncidentPriority | str | None = None,
     assigned_to_user_id: uuid.UUID | None = None,
     created_by_user_id: uuid.UUID | None = None,
     search: str | None = None,
@@ -371,15 +392,19 @@ async def list_incidents(
 
     count_stmt = select(func.count(Incident.id))
 
-    if status:
-        stmt = stmt.where(Incident.status == status.upper())
-        count_stmt = count_stmt.where(Incident.status == status.upper())
-    if severity:
-        stmt = stmt.where(Incident.severity == severity.upper())
-        count_stmt = count_stmt.where(Incident.severity == severity.upper())
-    if priority:
-        stmt = stmt.where(Incident.priority == priority.upper())
-        count_stmt = count_stmt.where(Incident.priority == priority.upper())
+    status_str = status.value if isinstance(status, IncidentStatus) else status
+    severity_str = severity.value if isinstance(severity, IncidentSeverity) else severity
+    priority_str = priority.value if isinstance(priority, IncidentPriority) else priority
+
+    if status_str:
+        stmt = stmt.where(Incident.status == status_str.upper())
+        count_stmt = count_stmt.where(Incident.status == status_str.upper())
+    if severity_str:
+        stmt = stmt.where(Incident.severity == severity_str.upper())
+        count_stmt = count_stmt.where(Incident.severity == severity_str.upper())
+    if priority_str:
+        stmt = stmt.where(Incident.priority == priority_str.upper())
+        count_stmt = count_stmt.where(Incident.priority == priority_str.upper())
     if assigned_to_user_id:
         stmt = stmt.where(Incident.assigned_to_user_id == assigned_to_user_id)
         count_stmt = count_stmt.where(Incident.assigned_to_user_id == assigned_to_user_id)
@@ -400,7 +425,7 @@ async def list_incidents(
     total = total_res.scalar_one()
 
     offset = (page - 1) * limit
-    stmt = stmt.order_by(Incident.created_at.desc()).offset(offset).limit(limit)
+    stmt = stmt.order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit)
 
     results = (await db.execute(stmt)).all()
 
@@ -507,13 +532,15 @@ async def transition_incident_status(
     current_status = incident.status
     target_status = payload.status.value
 
-    if target_status != current_status:
-        allowed = ALLOWED_TRANSITIONS.get(current_status, set())
-        if target_status not in allowed:
-            raise InvalidStatusTransitionError(
-                f"Cannot transition incident from status '{current_status}' to '{target_status}'. "
-                f"Allowed transitions: {sorted(list(allowed))}"
-            )
+    if target_status == current_status:
+        raise InvalidStatusTransitionError(f"Incident is already in status '{current_status}'.")
+
+    allowed = ALLOWED_TRANSITIONS.get(current_status, set())
+    if target_status not in allowed:
+        raise InvalidStatusTransitionError(
+            f"Cannot transition incident from status '{current_status}' to '{target_status}'. "
+            f"Allowed transitions: {sorted(list(allowed))}"
+        )
 
     old_value = {
         "status": current_status,
@@ -587,8 +614,18 @@ async def transition_incident_status(
                 )
             )
 
-    await db.commit()
-    await db.refresh(incident)
+    elif target_status == IncidentStatus.OPEN.value:
+        incident.status = IncidentStatus.OPEN.value
+        if payload.comment:
+            db.add(
+                IncidentNote(
+                    incident_id=incident.id,
+                    author_user_id=actor_user_id,
+                    content=f"[Status transitioned to OPEN] {payload.comment.strip()}",
+                )
+            )
+
+    await db.flush()
 
     new_value = {
         "status": incident.status,
@@ -640,6 +677,8 @@ async def assign_incident(
 ) -> Incident:
     """Assign or reassign an analyst to the incident case."""
     old_assignee = str(incident.assigned_to_user_id) if incident.assigned_to_user_id else None
+    old_status = incident.status
+    target_user: User | None = None
 
     if assigned_to_user_id is not None:
         user_stmt = select(User).where(User.id == assigned_to_user_id, User.is_active.is_(True))
@@ -647,14 +686,27 @@ async def assign_incident(
         if not target_user:
             raise UserNotFoundError(f"User {assigned_to_user_id} not found or inactive")
 
+    incident.assigned_to_user = target_user
     incident.assigned_to_user_id = assigned_to_user_id
 
     # If assigning an OPEN incident, automatically move it to IN_PROGRESS
+    status_changed = False
     if incident.status == IncidentStatus.OPEN.value and assigned_to_user_id is not None:
         incident.status = IncidentStatus.IN_PROGRESS.value
+        status_changed = True
+        assignee_name = target_user.username if target_user else str(assigned_to_user_id)
+        db.add(
+            IncidentNote(
+                incident_id=incident.id,
+                author_user_id=actor_user_id,
+                content=(
+                    f"[Status auto-transitioned from OPEN to IN_PROGRESS "
+                    f"upon assignment to {assignee_name}]"
+                ),
+            )
+        )
 
-    await db.commit()
-    await db.refresh(incident)
+    await db.flush()
 
     new_assignee = str(incident.assigned_to_user_id) if incident.assigned_to_user_id else None
 
@@ -671,6 +723,20 @@ async def assign_incident(
         user_agent=user_agent,
     )
 
+    if status_changed:
+        await record_audit_log(
+            db=db,
+            action="INCIDENT_STATUS_CHANGED",
+            actor_user_id=actor_user_id,
+            resource_type="incident",
+            resource_id=str(incident.id),
+            old_value={"status": old_status},
+            new_value={"status": incident.status, "reason": "auto_assignment"},
+            request_id=request_id,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+
     return await get_incident_by_identifier(db, str(incident.id))
 
 
@@ -683,7 +749,7 @@ async def attach_alert_to_incident(
     source_ip: str | None = None,
     user_agent: str | None = None,
 ) -> IncidentAlertSummaryResponse:
-    """Attach an alert to an incident case, ensuring uniqueness."""
+    """Attach an alert to an incident case, ensuring uniqueness and race safety."""
     alert_stmt = select(Alert).where(Alert.id == alert_id)
     alert = (await db.execute(alert_stmt)).scalar_one_or_none()
     if not alert:
@@ -697,14 +763,21 @@ async def attach_alert_to_incident(
             f"Alert {alert_id} is already linked to incident {incident.incident_id}"
         )
 
+    incident_id_str = incident.incident_id
     inc_alert = IncidentAlert(
         incident_id=incident.id,
         alert_id=alert_id,
         added_by_user_id=actor_user_id,
     )
     db.add(inc_alert)
-    await db.commit()
-    await db.refresh(inc_alert)
+
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        raise DuplicateAttachmentError(
+            f"Alert {alert_id} is already linked to incident {incident_id_str}"
+        ) from err
 
     await record_audit_log(
         db=db,
@@ -750,7 +823,7 @@ async def detach_alert_from_incident(
         )
 
     await db.delete(inc_alert)
-    await db.commit()
+    await db.flush()
 
     await record_audit_log(
         db=db,
@@ -788,14 +861,21 @@ async def attach_event_to_incident(
             f"Event {event_id} is already linked as evidence to incident {incident.incident_id}"
         )
 
+    incident_id_str = incident.incident_id
     inc_event = IncidentEvent(
         incident_id=incident.id,
         event_id=event_id,
         added_by_user_id=actor_user_id,
     )
     db.add(inc_event)
-    await db.commit()
-    await db.refresh(inc_event)
+
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        raise DuplicateAttachmentError(
+            f"Event {event_id} is already linked as evidence to incident {incident_id_str}"
+        ) from err
 
     await record_audit_log(
         db=db,
@@ -845,7 +925,7 @@ async def detach_event_from_incident(
         )
 
     await db.delete(inc_event)
-    await db.commit()
+    await db.flush()
 
     await record_audit_log(
         db=db,
@@ -882,16 +962,7 @@ async def create_incident_note(
         content=clean_content,
     )
     db.add(note)
-    await db.commit()
-    await db.refresh(note)
-
-    # Re-fetch note with author loaded
-    stmt = (
-        select(IncidentNote)
-        .options(selectinload(IncidentNote.author))
-        .where(IncidentNote.id == note.id)
-    )
-    reloaded_note = (await db.execute(stmt)).scalar_one()
+    await db.flush()
 
     # Never log full note content in audit log for data confidentiality
     await record_audit_log(
@@ -906,11 +977,17 @@ async def create_incident_note(
         user_agent=user_agent,
     )
 
-    return reloaded_note
+    # Re-fetch note with author loaded
+    stmt = (
+        select(IncidentNote)
+        .options(selectinload(IncidentNote.author))
+        .where(IncidentNote.id == note.id)
+    )
+    return (await db.execute(stmt)).scalar_one()
 
 
 async def build_incident_timeline(
-    db: AsyncSession, incident: Incident
+    db: AsyncSession, incident: Incident, limit: int = 500
 ) -> list[IncidentTimelineEntry]:
     """Aggregate chronological timeline distinguishing event timestamps from action timestamps."""
     timeline_entries: list[IncidentTimelineEntry] = []
@@ -943,6 +1020,7 @@ async def build_incident_timeline(
             AuditLog.resource_id == str(incident.id),
         )
         .order_by(AuditLog.timestamp.asc())
+        .limit(500)
     )
     audit_logs = (await db.execute(audit_stmt)).scalars().all()
 
@@ -1046,9 +1124,9 @@ async def build_incident_timeline(
             )
         )
 
-    # Sort strictly chronologically by investigation timestamp
-    timeline_entries.sort(key=lambda x: x.timestamp)
-    return timeline_entries
+    # Sort strictly chronologically with deterministic tie-breaking on unique id
+    timeline_entries.sort(key=lambda x: (x.timestamp, x.id))
+    return timeline_entries[:limit]
 
 
 def format_incident_detail(incident: Incident) -> IncidentDetailResponse:

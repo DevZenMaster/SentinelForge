@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
 from app.core.rbac import (
+    PERMISSION_INCIDENTS_CLOSE,
     PERMISSION_INCIDENTS_CREATE,
     PERMISSION_INCIDENTS_READ,
     PERMISSION_INCIDENTS_UPDATE,
@@ -31,11 +32,15 @@ from app.schemas.incident import (
     IncidentListResponse,
     IncidentNoteCreateRequest,
     IncidentNoteResponse,
+    IncidentPriority,
+    IncidentSeverity,
+    IncidentStatus,
     IncidentStatusTransitionRequest,
     IncidentTimelineResponse,
     IncidentUpdateRequest,
 )
 from app.schemas.response import APIResponse, ResponseMetadata
+from app.services.auth import resolve_user_capabilities
 from app.services.incident import (
     AlertNotFoundError,
     DuplicateAttachmentError,
@@ -138,11 +143,11 @@ async def list_incidents_endpoint(
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(default=1, ge=1, description="Page number"),
     limit: int = Query(default=50, ge=1, le=100, description="Items per page"),
-    incident_status: str | None = Query(
+    incident_status: IncidentStatus | None = Query(
         default=None, alias="status", description="Filter by status"
     ),
-    severity: str | None = Query(default=None, description="Filter by severity"),
-    priority: str | None = Query(default=None, description="Filter by priority"),
+    severity: IncidentSeverity | None = Query(default=None, description="Filter by severity"),
+    priority: IncidentPriority | None = Query(default=None, description="Filter by priority"),
     assigned_to_user_id: uuid.UUID | None = Query(
         default=None, description="Filter by assigned analyst"
     ),
@@ -244,8 +249,21 @@ async def transition_status_endpoint(
 ) -> APIResponse[IncidentDetailResponse]:
     """Transition lifecycle status with state machine validation. Requires incidents.update."""
     request_id, source_ip, user_agent = _client_context(request)
+
+    # Closing an incident requires dedicated incidents.close permission
+    if payload.status == IncidentStatus.CLOSED:
+        roles, permissions = await resolve_user_capabilities(db, current_user.id)
+        if not current_user.is_superuser and PERMISSION_INCIDENTS_CLOSE not in permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Forbidden: You do not possess the required permission "
+                    f"'{PERMISSION_INCIDENTS_CLOSE}' to close an incident."
+                ),
+            )
+
     try:
-        incident = await get_incident_by_identifier(db, incident_identifier)
+        incident = await get_incident_by_identifier(db, incident_identifier, for_update=True)
         updated = await transition_incident_status(
             db=db,
             incident=incident,
@@ -548,6 +566,7 @@ async def get_timeline_endpoint(
     incident_identifier: str,
     current_user: Annotated[User, Depends(require_permission(PERMISSION_INCIDENTS_READ))],
     db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=100, ge=1, le=500, description="Max timeline entries to return"),
 ) -> APIResponse[IncidentTimelineResponse]:
     """Retrieve chronological investigation timeline. Requires incidents.read."""
     try:
@@ -555,7 +574,7 @@ async def get_timeline_endpoint(
     except IncidentNotFoundError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
 
-    entries = await build_incident_timeline(db, incident)
+    entries = await build_incident_timeline(db, incident, limit=limit)
     resp = IncidentTimelineResponse(
         incident_id=incident.incident_id,
         total_entries=len(entries),

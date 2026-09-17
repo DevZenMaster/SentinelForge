@@ -15,11 +15,12 @@ Validates:
 - RBAC enforcement across VIEWER (read-only), ANALYST, and ADMIN personas
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -439,7 +440,8 @@ async def test_lifecycle_complete_happy_path(
     async_client: AsyncClient, test_db_session: AsyncSession
 ) -> None:
     """Verify lifecycle progression: OPEN -> IN_PROGRESS -> RESOLVED -> CLOSED -> REOPENED."""
-    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_lifecycle")
+    _, analyst_token = await create_user(test_db_session, ROLE_ANALYST, "analyst_lifecycle")
+    _, admin_token = await create_user(test_db_session, ROLE_ADMIN, "admin_lifecycle")
 
     # 1. Start in OPEN
     create_res = await async_client.post(
@@ -449,7 +451,7 @@ async def test_lifecycle_complete_happy_path(
             "description": "Full lifecycle tracking",
             "severity": "HIGH",
         },
-        headers=auth_headers(token),
+        headers=auth_headers(analyst_token),
     )
     inc_id = create_res.json()["data"]["id"]
 
@@ -457,7 +459,7 @@ async def test_lifecycle_complete_happy_path(
     res_prog = await async_client.post(
         f"/api/v1/incidents/{inc_id}/status",
         json={"status": "IN_PROGRESS", "comment": "Analyst began investigation"},
-        headers=auth_headers(token),
+        headers=auth_headers(analyst_token),
     )
     assert res_prog.status_code == 200
     assert res_prog.json()["data"]["status"] == "IN_PROGRESS"
@@ -471,7 +473,7 @@ async def test_lifecycle_complete_happy_path(
             "resolution_notes": "Identified malicious IP and revoked compromised API token.",
             "comment": "Resolution confirmed by security team.",
         },
-        headers=auth_headers(token),
+        headers=auth_headers(analyst_token),
     )
     assert res_resolv.status_code == 200
     resolv_data = res_resolv.json()["data"]
@@ -479,25 +481,25 @@ async def test_lifecycle_complete_happy_path(
     assert resolv_data["resolution_category"] == "TRUE_POSITIVE"
     assert resolv_data["resolved_at"] is not None
 
-    # 4. RESOLVED -> CLOSED
+    # 4. RESOLVED -> CLOSED (Requires ADMIN possessing incidents.close)
     res_close = await async_client.post(
         f"/api/v1/incidents/{inc_id}/status",
         json={"status": "CLOSED", "comment": "All remediation verified."},
-        headers=auth_headers(token),
+        headers=auth_headers(admin_token),
     )
     assert res_close.status_code == 200
     close_data = res_close.json()["data"]
     assert close_data["status"] == "CLOSED"
     assert close_data["closed_at"] is not None
 
-    # 5. CLOSED -> REOPENED
+    # 5. CLOSED -> REOPENED (Analyst or Admin can reopen with reason)
     res_reopen = await async_client.post(
         f"/api/v1/incidents/{inc_id}/status",
         json={
             "status": "REOPENED",
             "comment": "Further unauthorized activity detected from related IP.",
         },
-        headers=auth_headers(token),
+        headers=auth_headers(analyst_token),
     )
     assert res_reopen.status_code == 200
     reopen_data = res_reopen.json()["data"]
@@ -531,20 +533,54 @@ async def test_lifecycle_invalid_transitions_rejected(
     )
     assert res_inv1.status_code == 400
 
+    # OPEN -> CLOSED is invalid (cannot skip investigation)
+    res_inv_close = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "CLOSED", "comment": "Attempting invalid direct close from OPEN"},
+        headers=auth_headers(token),
+    )
+    assert res_inv_close.status_code in (400, 403)
+
     # Transition to IN_PROGRESS
+    res_prog = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "IN_PROGRESS"},
+        headers=auth_headers(token),
+    )
+    assert res_prog.status_code == 200
+
+    # IN_PROGRESS -> OPEN is valid (de-escalation/unassign back to triage)
+    res_open = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "OPEN", "comment": "Reset back to open triage queue"},
+        headers=auth_headers(token),
+    )
+    assert res_open.status_code == 200
+    assert res_open.json()["data"]["status"] == "OPEN"
+
+    # Transition back to IN_PROGRESS, then RESOLVED
     await async_client.post(
         f"/api/v1/incidents/{inc_id}/status",
         json={"status": "IN_PROGRESS"},
         headers=auth_headers(token),
     )
-
-    # IN_PROGRESS -> OPEN is invalid
-    res_inv2 = await async_client.post(
+    await async_client.post(
         f"/api/v1/incidents/{inc_id}/status",
-        json={"status": "OPEN"},
+        json={
+            "status": "RESOLVED",
+            "resolution_category": "FALSE_POSITIVE",
+            "resolution_notes": "Identified benign penetration testing activity.",
+        },
         headers=auth_headers(token),
     )
-    assert res_inv2.status_code == 400
+
+    # RESOLVED -> IN_PROGRESS is invalid (must be REOPENED first)
+    res_inv3 = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "IN_PROGRESS"},
+        headers=auth_headers(token),
+    )
+    assert res_inv3.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -855,3 +891,456 @@ async def test_rbac_persona_boundaries(
     # 6. Unauthenticated request receives 401
     unauth = await async_client.get(f"/api/v1/incidents/{inc_id}")
     assert unauth.status_code == 401
+
+
+# ==============================================================================
+# 9. Security & Architecture Hardening Tests
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_privilege_escalation_analyst_cannot_close_incident(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify an ANALYST cannot close an incident (403 Forbidden); only ADMIN can."""
+    _, analyst_token = await create_user(test_db_session, ROLE_ANALYST, "analyst_close_att")
+    _, admin_token = await create_user(test_db_session, ROLE_ADMIN, "admin_close_att")
+
+    # Create and resolve incident
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Closure Privilege Test",
+            "description": "Detailed incident description",
+            "severity": "HIGH",
+        },
+        headers=auth_headers(analyst_token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "IN_PROGRESS"},
+        headers=auth_headers(analyst_token),
+    )
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={
+            "status": "RESOLVED",
+            "resolution_category": "TRUE_POSITIVE",
+            "resolution_notes": "Resolved by analyst",
+        },
+        headers=auth_headers(analyst_token),
+    )
+
+    # 1. Analyst attempts to close -> 403 Forbidden
+    analyst_close = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "CLOSED", "comment": "Analyst trying to close"},
+        headers=auth_headers(analyst_token),
+    )
+    assert analyst_close.status_code == 403
+    assert "incidents.close" in analyst_close.json()["error"]["message"]
+
+    # 2. Admin closes -> 200 OK
+    admin_close = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "CLOSED", "comment": "Admin officially closing"},
+        headers=auth_headers(admin_token),
+    )
+    assert admin_close.status_code == 200
+    assert admin_close.json()["data"]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_raw_evidence_integrity_across_full_incident_lifecycle(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify raw security event payload and timestamps remain strictly immutable
+    across full lifecycle.
+    """
+    _, analyst_token = await create_user(test_db_session, ROLE_ANALYST, "analyst_ev_immut")
+    _, admin_token = await create_user(test_db_session, ROLE_ADMIN, "admin_ev_immut")
+
+    # 1. Ingest security event with complex raw payload
+    raw_evidence_payload = {
+        "event_source": "syslog",
+        "nested_details": {"process": "sshd", "pid": 4128, "cmd": "/usr/sbin/sshd -D"},
+        "evidence_markers": ["malicious_ip", "recon_pattern"],
+    }
+    event_time = datetime.now(UTC) - timedelta(hours=2)
+    ev = Event(
+        timestamp=event_time,
+        source="linux_auth",
+        source_type="syslog",
+        raw_payload=raw_evidence_payload,
+        event_type="authentication",
+        action="login_failure",
+        outcome="failure",
+        severity="HIGH",
+        source_ip="198.51.100.77",
+    )
+    test_db_session.add(ev)
+    await test_db_session.commit()
+    await test_db_session.refresh(ev)
+    ev_id = ev.id
+
+    # 2. Create incident and attach event
+    inc_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Evidence Immutability Case",
+            "description": "Case testing raw payload",
+            "severity": "HIGH",
+        },
+        headers=auth_headers(analyst_token),
+    )
+    inc_id = inc_res.json()["data"]["id"]
+
+    att_res = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/events",
+        json={"event_id": str(ev_id)},
+        headers=auth_headers(analyst_token),
+    )
+    assert att_res.status_code == 200
+
+    # 3. Update incident metadata
+    await async_client.patch(
+        f"/api/v1/incidents/{inc_id}",
+        json={"title": "Updated Title", "priority": "URGENT"},
+        headers=auth_headers(analyst_token),
+    )
+
+    # 4. Add notes
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/notes",
+        json={"content": "Investigative findings note"},
+        headers=auth_headers(analyst_token),
+    )
+
+    # 5. Move through lifecycle: IN_PROGRESS -> RESOLVED -> REOPENED -> RESOLVED -> CLOSED
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "IN_PROGRESS"},
+        headers=auth_headers(analyst_token),
+    )
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={
+            "status": "RESOLVED",
+            "resolution_category": "TRUE_POSITIVE",
+            "resolution_notes": "Remediated threat",
+        },
+        headers=auth_headers(analyst_token),
+    )
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "REOPENED", "comment": "Further anomalies"},
+        headers=auth_headers(analyst_token),
+    )
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={
+            "status": "RESOLVED",
+            "resolution_category": "TRUE_POSITIVE",
+            "resolution_notes": "Second remediation confirmed",
+        },
+        headers=auth_headers(analyst_token),
+    )
+    await async_client.post(
+        f"/api/v1/incidents/{inc_id}/status",
+        json={"status": "CLOSED", "comment": "Case formally closed"},
+        headers=auth_headers(admin_token),
+    )
+
+    # 6. Re-fetch original event and assert 100% forensic immutability
+    reloaded = (await test_db_session.execute(select(Event).where(Event.id == ev_id))).scalar_one()
+    assert reloaded.raw_payload == raw_evidence_payload
+    assert (
+        reloaded.timestamp.replace(tzinfo=UTC) == event_time
+        if reloaded.timestamp.tzinfo is None
+        else reloaded.timestamp == event_time
+    )
+    assert reloaded.source_ip == "198.51.100.77"
+
+
+@pytest.mark.asyncio
+async def test_auto_assignment_advances_status_with_audit_trail(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify assigning an OPEN incident auto-advances status and logs both
+    assignment and status audit events.
+    """
+    _, analyst1_token = await create_user(test_db_session, ROLE_ANALYST, "analyst_auto_assign1")
+    analyst2, _ = await create_user(test_db_session, ROLE_ANALYST, "analyst_auto_assign2")
+
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Auto Advance Case",
+            "description": "Testing status advancement",
+            "severity": "MEDIUM",
+        },
+        headers=auth_headers(analyst1_token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+    assert create_res.json()["data"]["status"] == "OPEN"
+
+    assign_res = await async_client.post(
+        f"/api/v1/incidents/{inc_id}/assign",
+        json={"assigned_to_user_id": str(analyst2.id)},
+        headers=auth_headers(analyst1_token),
+    )
+    assert assign_res.status_code == 200
+    assert assign_res.json()["data"]["status"] == "IN_PROGRESS"
+
+    # Verify both audit records were committed
+    stmt = (
+        select(AuditLog)
+        .where(AuditLog.resource_type == "incident", AuditLog.resource_id == inc_id)
+        .order_by(AuditLog.timestamp.asc())
+    )
+    logs = (await test_db_session.execute(stmt)).scalars().all()
+    actions = [log.action for log in logs]
+    assert "INCIDENT_ASSIGNED" in actions
+    assert "INCIDENT_STATUS_CHANGED" in actions
+
+
+@pytest.mark.asyncio
+async def test_list_incidents_invalid_enum_rejected(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify invalid query parameter enums are strictly rejected with 422 Unprocessable Content."""
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_enum_test")
+
+    res_status = await async_client.get(
+        "/api/v1/incidents?status=MALICIOUS_STATUS",
+        headers=auth_headers(token),
+    )
+    assert res_status.status_code == 422
+
+    res_sev = await async_client.get(
+        "/api/v1/incidents?severity=SUPER_CRITICAL",
+        headers=auth_headers(token),
+    )
+    assert res_sev.status_code == 422
+
+    res_prio = await async_client.get(
+        "/api/v1/incidents?priority=HYPER_PRIORITY",
+        headers=auth_headers(token),
+    )
+    assert res_prio.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_mass_assignment_protection_patch_rejects_extra_fields(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify PATCH /api/v1/incidents/{id} rejects extra/protected fields with 422."""
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_mass_assign")
+
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Mass Assign Protection",
+            "description": "Detailed incident description",
+            "severity": "LOW",
+        },
+        headers=auth_headers(token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+
+    # Attempt to modify status or timestamps via PATCH -> 422
+    patch_res = await async_client.patch(
+        f"/api/v1/incidents/{inc_id}",
+        json={"status": "CLOSED"},
+        headers=auth_headers(token),
+    )
+    assert patch_res.status_code == 422
+
+    patch_res2 = await async_client.patch(
+        f"/api/v1/incidents/{inc_id}",
+        json={"created_by_user_id": str(uuid.uuid4())},
+        headers=auth_headers(token),
+    )
+    assert patch_res2.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_timeline_query_bounded_and_deterministic_tie_breaking(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify timeline query is bounded by limit parameter and maintains deterministic ordering."""
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_timeline_bound")
+
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Timeline Bound Test",
+            "description": "Detailed incident description",
+            "severity": "LOW",
+        },
+        headers=auth_headers(token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+
+    # Add 5 notes
+    for i in range(5):
+        await async_client.post(
+            f"/api/v1/incidents/{inc_id}/notes",
+            json={"content": f"Note {i}"},
+            headers=auth_headers(token),
+        )
+
+    # Fetch timeline with limit=2
+    res_bounded = await async_client.get(
+        f"/api/v1/incidents/{inc_id}/timeline?limit=2",
+        headers=auth_headers(token),
+    )
+    assert res_bounded.status_code == 200
+    data = res_bounded.json()["data"]
+    assert len(data["entries"]) == 2
+
+    # Fetch unbounded timeline
+    res_all = await async_client.get(
+        f"/api/v1/incidents/{inc_id}/timeline",
+        headers=auth_headers(token),
+    )
+    assert res_all.status_code == 200
+    assert len(res_all.json()["data"]["entries"]) >= 6
+
+
+@pytest.mark.asyncio
+async def test_generate_incident_id_skips_non_numeric_fallback_ids(
+    test_db_session: AsyncSession,
+) -> None:
+    """Verify generate_incident_id safely skips non-numeric fallback IDs
+    without resetting sequence to 1.
+    """
+    year = datetime.now(UTC).year
+
+    # Seed an incident with a non-numeric fallback ID
+    inc_fallback = Incident(
+        incident_id=f"INC-{year}-A1B2C3",
+        title="Fallback ID Case",
+        description="Desc",
+        severity="LOW",
+        priority="LOW",
+        status="OPEN",
+    )
+    # And a sequential one
+    inc_seq = Incident(
+        incident_id=f"INC-{year}-000005",
+        title="Sequential Case",
+        description="Desc",
+        severity="LOW",
+        priority="LOW",
+        status="OPEN",
+    )
+    test_db_session.add_all([inc_fallback, inc_seq])
+    await test_db_session.commit()
+
+    next_id = await generate_incident_id(test_db_session, year=year)
+    assert next_id == f"INC-{year}-000006"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_incident_creation_and_sequential_ids(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify multiple concurrent incident creations allocate unique, non-colliding IDs."""
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_concurrent_inc")
+
+    async def create_one(i: int) -> Response:
+        return await async_client.post(
+            "/api/v1/incidents",
+            json={
+                "title": f"Concurrent Incident {i}",
+                "description": "Testing concurrency",
+                "severity": "LOW",
+            },
+            headers=auth_headers(token),
+        )
+
+    responses = await asyncio.gather(create_one(1), create_one(2))
+    for r in responses:
+        assert r.status_code == 201
+
+    incident_ids = [r.json()["data"]["incident_id"] for r in responses]
+    assert len(set(incident_ids)) == 2
+    for i_id in incident_ids:
+        assert i_id.startswith(f"INC-{datetime.now(UTC).year}-")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_alert_attachment_race_handling(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify concurrent attempts to attach the same alert to an incident
+    are handled safely with 409 Conflict.
+    """
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_race_alert")
+    alert = await create_dummy_alert(test_db_session, "Race Alert")
+
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Alert Race Case",
+            "description": "Testing alert race",
+            "severity": "MEDIUM",
+        },
+        headers=auth_headers(token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+
+    responses = await asyncio.gather(
+        async_client.post(
+            f"/api/v1/incidents/{inc_id}/alerts",
+            json={"alert_id": str(alert.id)},
+            headers=auth_headers(token),
+        ),
+        async_client.post(
+            f"/api/v1/incidents/{inc_id}/alerts",
+            json={"alert_id": str(alert.id)},
+            headers=auth_headers(token),
+        ),
+    )
+    status_codes = sorted([r.status_code for r in responses])
+    assert status_codes == [200, 409]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_event_attachment_race_handling(
+    async_client: AsyncClient, test_db_session: AsyncSession
+) -> None:
+    """Verify concurrent attempts to attach the same event to an incident
+    are handled safely with 409 Conflict.
+    """
+    _, token = await create_user(test_db_session, ROLE_ANALYST, "analyst_race_event")
+    event = await create_dummy_event(test_db_session, "10.0.0.99")
+
+    create_res = await async_client.post(
+        "/api/v1/incidents",
+        json={
+            "title": "Event Race Case",
+            "description": "Testing event race",
+            "severity": "MEDIUM",
+        },
+        headers=auth_headers(token),
+    )
+    inc_id = create_res.json()["data"]["id"]
+
+    responses = await asyncio.gather(
+        async_client.post(
+            f"/api/v1/incidents/{inc_id}/events",
+            json={"event_id": str(event.id)},
+            headers=auth_headers(token),
+        ),
+        async_client.post(
+            f"/api/v1/incidents/{inc_id}/events",
+            json={"event_id": str(event.id)},
+            headers=auth_headers(token),
+        ),
+    )
+    status_codes = sorted([r.status_code for r in responses])
+    assert status_codes == [200, 409]
