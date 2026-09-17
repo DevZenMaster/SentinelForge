@@ -1,0 +1,15 @@
+{
+  "rule_id": "RULE-005",
+  "name": "Port Scan Pattern",
+  "description": "Detects connection attempts from a single source IP against 10 or more distinct destination ports within 2 minutes.",
+  "severity": "HIGH",
+  "enabled": true,
+  "event_type": "network",
+  "threshold": 10,
+  "time_window_seconds": 120,
+  "conditions": {
+    "action": "connection_attempt",
+    "distinct_field": "destination_port",
+    "group_by": "source_ip"
+  }
+}

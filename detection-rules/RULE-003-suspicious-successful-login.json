@@ -1,0 +1,15 @@
+{
+  "rule_id": "RULE-003",
+  "name": "Suspicious Successful Login",
+  "description": "Detects a successful authentication preceded by 3 or more authentication failures from the same source IP within 10 minutes.",
+  "severity": "HIGH",
+  "enabled": true,
+  "event_type": "authentication",
+  "threshold": 3,
+  "time_window_seconds": 600,
+  "conditions": {
+    "trigger_action": "login_success",
+    "prior_action": "login_failed",
+    "group_by": "source_ip"
+  }
+}

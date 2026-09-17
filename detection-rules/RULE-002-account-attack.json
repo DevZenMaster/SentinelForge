@@ -1,0 +1,14 @@
+{
+  "rule_id": "RULE-002",
+  "name": "Account Attack",
+  "description": "Detects 10 failed authentication attempts against the same username within 10 minutes.",
+  "severity": "HIGH",
+  "enabled": true,
+  "event_type": "authentication",
+  "threshold": 10,
+  "time_window_seconds": 600,
+  "conditions": {
+    "action": "login_failed",
+    "group_by": "username"
+  }
+}

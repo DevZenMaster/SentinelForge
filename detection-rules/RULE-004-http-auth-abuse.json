@@ -1,0 +1,14 @@
+{
+  "rule_id": "RULE-004",
+  "name": "HTTP Authentication Abuse",
+  "description": "Detects 15 or more HTTP 401 responses from the same source IP within 5 minutes.",
+  "severity": "MEDIUM",
+  "enabled": true,
+  "event_type": "web",
+  "threshold": 15,
+  "time_window_seconds": 300,
+  "conditions": {
+    "action": "http_401",
+    "group_by": "source_ip"
+  }
+}
