@@ -132,3 +132,32 @@ def test_event_model_normalization_fields_and_indexes() -> None:
     assert ["event_type", "action", "timestamp"] in index_column_sets
     assert ["outcome"] in index_column_sets
     assert ["normalization_status"] in index_column_sets
+
+
+def test_alert_model_dedup_and_evidence_fields() -> None:
+    """Verify Alert table defines dedup, correlation, evidence fields and indexes."""
+    table = Base.metadata.tables["alerts"]
+
+    expected_columns = [
+        "dedup_key",
+        "correlation_key",
+        "observed_count",
+        "threshold",
+        "evidence",
+    ]
+    for col in expected_columns:
+        assert col in table.c, f"Column '{col}' missing from alerts table"
+        assert not table.c[col].nullable, f"Column '{col}' should not be nullable"
+
+    # Unique constraint on dedup_key
+    unique_constraints = [
+        [col.name for col in uq.columns] for uq in table.constraints if hasattr(uq, "columns")
+    ]
+    assert ["dedup_key"] in unique_constraints
+
+    # Compound and single indexes
+    index_column_sets = [[c.name for c in idx.columns] for idx in table.indexes]
+    assert ["dedup_key"] in index_column_sets
+    assert ["correlation_key"] in index_column_sets
+    assert ["rule_id", "created_at"] in index_column_sets
+    assert ["correlation_key", "created_at"] in index_column_sets

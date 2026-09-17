@@ -83,11 +83,20 @@ Errors return appropriate HTTP status codes (`400`, `401`, `403`, `404`, `422`, 
   - **Auth**: Required (`events.normalize` permission; accessible to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
   - **Behavior**: Re-evaluates the preserved `raw_payload` against registered parsers, updates canonical fields, and emits audit event `EVENT_NORMALIZATION_REPROCESSED`.
   - **Responses**: `200 OK` with re-normalized `EventResponse`, `404 Not Found` if nonexistent.
+- `POST /api/v1/events/{id}/detect` - Manually evaluate detection rules on an event.
+  - **Auth**: Required (`detections.evaluate` permission; accessible to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Behavior**: Evaluates all applicable rules in the active rule registry, creates/deduplicates alerts, links evidence, and emits audit event `EVENT_DETECTION_EVALUATED`.
+  - **Responses**: `200 OK` with `DetectionEvaluationResponse`, `404 Not Found` if nonexistent.
 - `GET /api/v1/events` - Query normalized security events (paginated, multi-filter).
 
 ### Alerts (`/api/v1/alerts`)
-- `GET /api/v1/alerts` - List alerts (filtered by severity, status, rule, date range).
+- `GET /api/v1/alerts` - List alerts (filtered by severity, status, rule, source IP, username).
+  - **Auth**: Required (`alerts.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
+  - **Query Params**: `page` (default 1), `limit` (default 50, max 100), `rule_id`, `severity`, `status`, `source_ip`, `username`.
+  - **Responses**: `200 OK` with paginated `AlertListResponse`.
 - `GET /api/v1/alerts/{id}` - Retrieve alert details and linked triggering evidence events.
+  - **Auth**: Required (`alerts.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
+  - **Responses**: `200 OK` with `AlertDetailResponse` enclosing constituent `evidence_events` and `evidence_event_ids`, `404 Not Found` if nonexistent.
 - `PATCH /api/v1/alerts/{id}/status` - Update alert status (`OPEN`, `ACKNOWLEDGED`, `INVESTIGATING`, `RESOLVED`, `FALSE_POSITIVE`).
 
 ### Incidents (`/api/v1/incidents`)

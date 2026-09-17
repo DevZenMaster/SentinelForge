@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.detection import default_detection_engine
+from app.models.alert import Alert
 from app.models.event import Event
 from app.normalization import apply_normalization_to_event, normalize_event
 from app.schemas.event import EventCreateRequest
@@ -195,6 +197,21 @@ async def ingest_security_event(
         },
     )
 
+    # 5. Fault-isolated detection rule evaluation
+    try:
+        triggered_alerts = await default_detection_engine.evaluate_event(db, new_event)
+        if triggered_alerts:
+            logger.info(
+                f"Detection engine generated {len(triggered_alerts)} alert(s) "
+                f"for event {new_event.id}",
+                extra={"event_id": str(new_event.id), "alerts_count": len(triggered_alerts)},
+            )
+    except Exception as exc:
+        logger.exception(
+            f"Detection evaluation failed during ingestion of event {new_event.id}: {exc}",
+            extra={"event_id": str(new_event.id), "error": str(exc)},
+        )
+
     return new_event, False
 
 
@@ -258,4 +275,46 @@ async def reprocess_event_normalization(
         },
     )
 
+    try:
+        await default_detection_engine.evaluate_event(db, event)
+    except Exception as exc:
+        logger.exception(
+            f"Detection evaluation failed during reprocessing of event {event.id}: {exc}",
+            extra={"event_id": str(event.id), "error": str(exc)},
+        )
+
     return event
+
+
+async def evaluate_event_detections(
+    db: AsyncSession,
+    event_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
+    request_id: str | None = None,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+) -> list[Alert]:
+    """Explicitly trigger detection rule evaluation on an existing event."""
+    event = await get_event_by_id(db, event_id)
+    if not event:
+        return []
+
+    alerts = await default_detection_engine.evaluate_event(db, event)
+
+    await record_audit_log(
+        db=db,
+        action="EVENT_DETECTION_EVALUATED",
+        actor_user_id=actor_user_id,
+        resource_type="event",
+        resource_id=str(event.id),
+        request_id=request_id,
+        source_ip=client_ip,
+        user_agent=user_agent,
+        new_value={
+            "event_id": str(event.id),
+            "alerts_generated": len(alerts),
+            "alert_ids": [str(a.id) for a in alerts],
+        },
+    )
+
+    return alerts

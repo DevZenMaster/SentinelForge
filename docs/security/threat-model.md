@@ -52,7 +52,15 @@ See root [THREAT-MODEL.md](../../THREAT-MODEL.md) for the complete project-wide 
 * Audit records capture `actor_user_id`, `action`, `resource_type`, `resource_id`, `source_ip`, `user_agent`, `request_id`, and `timestamp`.
 * **No Credential Storage**: Audit trails strictly redact and exclude passwords, session tokens, and token hashes.
 
-### 7. Acknowledged Residual Risks
+### 7. Detection Engine Security Controls (Phase 5)
+* **Fault-Isolated Execution**: Each detection rule executes inside a dedicated exception handling boundary. Runtime errors, divide-by-zero, or data irregularities in a single rule cannot crash the detection engine, corrupt sibling rule evaluation, or roll back ingested events.
+* **Bounded Query Resource Protection**: Historical sliding-window queries enforce a hard limit (`max_window_events = 1000`) and use composite temporal database indexes (`(source_ip, timestamp)`, `(username, timestamp)`, `(event_type, action, timestamp)`) to prevent algorithmic complexity attacks or memory exhaustion from event flooding.
+* **SQL Injection Immunity**: All temporal and entity filters in the detection context use SQLAlchemy parameterized bind expressions.
+* **Deduplication Storm Defense**: Deterministic hashing (`rule_id:correlation_key:bucket`) backed by a PostgreSQL unique constraint (`uq_alerts_dedup_key`) stops alert storming by coalescing repeated triggering events into an existing alert.
+* **Forensic Evidence Immutability**: All evidence associations (`alert_events`) use strict foreign key constraints (`ForeignKey("events.id", ondelete="RESTRICT")`), ensuring evidence logs cannot be deleted while referenced by active alerts. Ingested `raw_payload` data remains strictly read-only.
+* **Granular RBAC**: Alert search and inspection require `alerts.read` (accessible to `ADMIN`, `ANALYST`, and `VIEWER`); manual evaluation requires `detections.evaluate` (`ADMIN` and `ANALYST` only, `VIEWER` receives `403 Forbidden`).
+
+### 8. Acknowledged Residual Risks
 * **Single-Process Memory Limiting**: In-memory rate limiting is process-bound. Distributed clusters in subsequent phases will integrate Redis for multi-node sliding window state.
 * **Database Admin Access**: A compromised PostgreSQL superuser could directly mutate database records, bypassing API-level immutability. Addressed via database-level privilege separation in production.
 

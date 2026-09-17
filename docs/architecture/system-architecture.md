@@ -123,6 +123,12 @@ erDiagram
    - **Extensible Attributes**: Preserves unmapped telemetry in `attributes` (PostgreSQL `JSONB`).
    - **Traceability & Diagnostics**: Stores `parser_name`, `parser_version`, `normalization_version`, `normalized_at`, `normalization_status` (`NORMALIZED`, `PARTIAL`, `FAILED`), and diagnostic `normalization_errors`.
    - **Reprocessing**: `POST /api/v1/events/{id}/normalize` allows analysts to re-evaluate raw telemetry as parser capabilities improve.
-7. **Detection Engine (Phase 5)**:
-   - Sliding window temporal queries against canonical columns and compound indexes (`ix_events_event_type_action_timestamp`, `ix_events_timestamp_source_ip`, `ix_events_timestamp_username`).
-   - Evaluates canonical outcomes (`failure`, `success`) to generate correlated `Alert` entities.
+7. **Detection Engine & Rule Evaluation (Phase 5)**:
+   - **Deterministic Rules Catalog**: Registered rules (`RULE-001` to `RULE-005`) evaluate canonical event types (`authentication`, `web`, `network`).
+   - **Sliding-Window Query Engine**: Context-bounded temporal queries (`[timestamp - window_seconds, timestamp]`) executed across compound indexes (`ix_events_source_ip_timestamp`, `ix_events_username_timestamp`, `ix_events_event_type_action_timestamp`).
+   - **Query Safety**: Hard limit (default 1000 events) and parameterized SQL prevent memory exhaustion and SQL injection.
+   - **Deterministic Alert Deduplication**: `dedup_key = {rule_id}:{correlation_key}:{bucket}` backed by database unique constraint `uq_alerts_dedup_key`.
+   - **Evidence Linking**: `AlertEvent` join table preserves immutable relationships linking alerts to constituent events without mutating raw event logs (`ForeignKey(events.id, ondelete=RESTRICT)`).
+   - **Fault Isolation**: Rule evaluation failures are isolated via individual exception boundaries; errors never impede other rules or abort event ingestion.
+   - **Execution Lifecycle**: Synchronous evaluation triggered during ingestion and reprocessing, plus on-demand evaluation via `POST /api/v1/events/{id}/detect`.
+   - **Alert Management API**: `GET /api/v1/alerts` and `GET /api/v1/alerts/{id}` provide paginated inspection and forensic evidence exploration.

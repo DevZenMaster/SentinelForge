@@ -122,3 +122,28 @@ Alert [ID: e7a1-...] (RULE-001: Brute Force Login)
   ├── Evidence Event 4 (10:00:48 - 192.168.1.50 - login_failed - admin)
   └── Evidence Event 5 (10:01:02 - 192.168.1.50 - login_failed - admin)
 ```
+
+---
+
+## Alert Deduplication & Coalescing Semantics
+
+To prevent alert fatigue and storm cascades during ongoing attacks, SentinelForge enforces deterministic alert deduplication backed by a unique database constraint (`uq_alerts_dedup_key`):
+
+```text
+dedup_key = f"{rule_id}:{correlation_key}:{bucket}"
+where bucket = int(event_timestamp.timestamp() // window_seconds)
+```
+
+- When an attack pattern persists within an active sliding time bucket, subsequent matching events update the existing alert (`observed_count`, `last_seen`, `evidence`) and append new constituent records to `alert_events`.
+- No duplicate alert records are generated within the same time bucket.
+- Concurrency races across worker threads are resolved via database unique constraint exception handling and savepoint fallbacks.
+
+---
+
+## Detection Execution Engine & RBAC
+
+- **Pipeline Trigger**: Evaluated synchronously upon event normalization during ingestion (`POST /api/v1/events`) and reprocessing (`POST /api/v1/events/{id}/normalize`).
+- **Manual Evaluation**: Analysts and Administrators can trigger on-demand evaluation via `POST /api/v1/events/{id}/detect` (requires `detections.evaluate`).
+- **Alert Retrieval**: Analysts and Viewers inspect alerts via `GET /api/v1/alerts` and `GET /api/v1/alerts/{id}` (requires `alerts.read`).
+- **Fault Isolation**: Each rule executes in an isolated try-except block. Runtime failures in any individual rule are logged with full structured context and never prevent other rules or event persistence from completing.
+

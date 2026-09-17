@@ -34,6 +34,8 @@ PERMISSION_RULES_READ: Final[str] = "rules.read"
 PERMISSION_RULES_CREATE: Final[str] = "rules.create"
 PERMISSION_RULES_UPDATE: Final[str] = "rules.update"
 
+PERMISSION_DETECTIONS_EVALUATE: Final[str] = "detections.evaluate"
+
 PERMISSION_AUDIT_READ: Final[str] = "audit.read"
 
 # Permission catalog with human-readable descriptions
@@ -53,6 +55,7 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_RULES_READ: "Inspect detection rules and threshold configurations",
     PERMISSION_RULES_CREATE: "Author and deploy new detection rules",
     PERMISSION_RULES_UPDATE: "Tune thresholds and enable/disable detection rules",
+    PERMISSION_DETECTIONS_EVALUATE: "Manually trigger detection rule evaluation on security events",
     PERMISSION_AUDIT_READ: "Inspect append-only security audit logs",
 }
 
@@ -76,6 +79,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_RULES_READ,
         PERMISSION_RULES_CREATE,
         PERMISSION_RULES_UPDATE,
+        PERMISSION_DETECTIONS_EVALUATE,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_ANALYST: [
@@ -89,6 +93,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INCIDENTS_UPDATE,
         PERMISSION_RULES_READ,
         PERMISSION_RULES_UPDATE,
+        PERMISSION_DETECTIONS_EVALUATE,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_VIEWER: [

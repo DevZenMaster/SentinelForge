@@ -6,13 +6,14 @@ public registration routes.
 """
 
 import logging
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rbac import DEFAULT_PERMISSIONS, DEFAULT_ROLE_PERMISSIONS, ROLE_ADMIN, SYSTEM_ROLES
 from app.core.security import get_password_hash
-from app.models import Permission, Role, RolePermission, User, UserRole
+from app.models import DetectionRule, Permission, Role, RolePermission, User, UserRole
 
 logger = logging.getLogger("sentinelforge.seed")
 
@@ -119,8 +120,134 @@ async def seed_initial_admin(
     return admin_user
 
 
+DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
+    {
+        "rule_id": "RULE-001",
+        "version": 1,
+        "name": "Brute Force Login",
+        "description": (
+            "Detects repeated authentication failures originating from a single source IP address "
+            "within a compressed time window, indicating an automated password guessing or "
+            "credential brute-force attack."
+        ),
+        "severity": "HIGH",
+        "enabled": True,
+        "event_type": "authentication",
+        "threshold": 5,
+        "time_window_seconds": 300,
+        "conditions": {"action": "login_failed", "group_by": "source_ip"},
+    },
+    {
+        "rule_id": "RULE-002",
+        "version": 1,
+        "name": "Targeted Account Password Spray",
+        "description": (
+            "Detects a high volume of failed authentication attempts against a specific username "
+            "regardless of source IP variation, indicating targeted credential stuffing or "
+            "account lock attack."
+        ),
+        "severity": "HIGH",
+        "enabled": True,
+        "event_type": "authentication",
+        "threshold": 10,
+        "time_window_seconds": 600,
+        "conditions": {"action": "login_failed", "group_by": "username"},
+    },
+    {
+        "rule_id": "RULE-003",
+        "version": 1,
+        "name": "Suspicious Login Following Failures",
+        "description": (
+            "Detects an authentication success preceded by multiple authentication failures "
+            "from the same source IP within a short sliding window, signaling a potentially "
+            "successful brute-force or credential compromise."
+        ),
+        "severity": "HIGH",
+        "enabled": True,
+        "event_type": "authentication",
+        "threshold": 3,
+        "time_window_seconds": 600,
+        "conditions": {
+            "triggering_action": "login_success",
+            "preceding_action": "login_failed",
+            "group_by": "source_ip",
+        },
+    },
+    {
+        "rule_id": "RULE-004",
+        "version": 1,
+        "name": "HTTP Authentication Abuse",
+        "description": (
+            "Detects repeated HTTP 401 Unauthorized responses emitted by web application logs "
+            "from a single client IP, indicating API token brute-force or unauthorized web "
+            "endpoint enumeration."
+        ),
+        "severity": "MEDIUM",
+        "enabled": True,
+        "event_type": "web",
+        "threshold": 15,
+        "time_window_seconds": 300,
+        "conditions": {"action": "http_401", "group_by": "source_ip"},
+    },
+    {
+        "rule_id": "RULE-005",
+        "version": 1,
+        "name": "Network Port Scan Pattern",
+        "description": (
+            "Detects connection attempts from a single source IP targeting multiple distinct "
+            "destination ports within a short period, characteristic of reconnaissance and "
+            "port scanning tools (e.g. Nmap, Masscan)."
+        ),
+        "severity": "HIGH",
+        "enabled": True,
+        "event_type": "network",
+        "threshold": 10,
+        "time_window_seconds": 120,
+        "conditions": {
+            "action": "connection_attempt",
+            "group_by": "source_ip",
+            "distinct_field": "destination_port",
+        },
+    },
+]
+
+
+async def seed_detection_rules(db: AsyncSession) -> int:
+    """Bootstrap default detection rules idempotently into detection_rules table."""
+    created_count = 0
+    for rule_data in DEFAULT_DETECTION_RULES:
+        rule_id = str(rule_data["rule_id"])
+        version = int(rule_data["version"])
+        stmt = select(DetectionRule).where(
+            DetectionRule.rule_id == rule_id,
+            DetectionRule.version == version,
+        )
+        existing = (await db.execute(stmt)).scalar_one_or_none()
+        if not existing:
+            rule = DetectionRule(
+                rule_id=rule_id,
+                version=version,
+                name=str(rule_data["name"]),
+                description=str(rule_data["description"]),
+                severity=str(rule_data["severity"]),
+                enabled=bool(rule_data["enabled"]),
+                event_type=str(rule_data["event_type"]),
+                threshold=int(rule_data["threshold"]),
+                time_window_seconds=int(rule_data["time_window_seconds"]),
+                conditions=dict(rule_data["conditions"]),
+            )
+            db.add(rule)
+            created_count += 1
+
+    if created_count > 0:
+        await db.commit()
+        logger.info(f"Seeded {created_count} default detection rules.")
+    return created_count
+
+
 async def seed_rbac_and_admin(db: AsyncSession) -> bool:
-    """Bootstrap full RBAC catalog and initial administrative account idempotently."""
+    """Bootstrap full RBAC catalog, admin account, and default detection rules idempotently."""
     await seed_roles_and_permissions(db)
     await seed_initial_admin(db)
+    await seed_detection_rules(db)
     return True

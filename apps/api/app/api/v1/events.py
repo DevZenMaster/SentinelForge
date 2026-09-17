@@ -15,15 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permission
 from app.core.rate_limit import enforce_event_ingest_rate_limit
 from app.core.rbac import (
+    PERMISSION_DETECTIONS_EVALUATE,
     PERMISSION_EVENTS_CREATE,
     PERMISSION_EVENTS_NORMALIZE,
     PERMISSION_EVENTS_READ,
 )
 from app.db.session import get_db
 from app.models import User
+from app.schemas.alert import AlertResponse
+from app.schemas.detection import DetectionEvaluationResponse
 from app.schemas.event import EventCreateRequest, EventIngestData, EventResponse
 from app.schemas.response import APIResponse, ResponseMetadata
 from app.services.event import (
+    evaluate_event_detections,
     get_event_by_id,
     ingest_security_event,
     reprocess_event_normalization,
@@ -197,6 +201,63 @@ async def reprocess_event(
 
     return APIResponse[EventResponse](
         data=EventResponse.model_validate(event),
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.post(
+    "/{event_id}/detect",
+    response_model=APIResponse[DetectionEvaluationResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Evaluate Detection Rules Against Event",
+)
+async def evaluate_event(
+    event_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_DETECTIONS_EVALUATE))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[DetectionEvaluationResponse]:
+    """Manually evaluate an existing event against all applicable detection rules.
+
+    Requires `detections.evaluate` permission.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("User-Agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    event = await get_event_by_id(db, event_id)
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Security event with ID '{event_id}' not found.",
+        )
+
+    alerts = await evaluate_event_detections(
+        db=db,
+        event_id=event_id,
+        actor_user_id=current_user.id,
+        request_id=request_id,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+
+    for a in alerts:
+        if a.created_at.tzinfo is None:
+            a.created_at = a.created_at.replace(tzinfo=UTC)
+        if a.updated_at.tzinfo is None:
+            a.updated_at = a.updated_at.replace(tzinfo=UTC)
+        if a.first_seen.tzinfo is None:
+            a.first_seen = a.first_seen.replace(tzinfo=UTC)
+        if a.last_seen.tzinfo is None:
+            a.last_seen = a.last_seen.replace(tzinfo=UTC)
+
+    return APIResponse[DetectionEvaluationResponse](
+        data=DetectionEvaluationResponse(
+            event_id=event_id,
+            alerts_triggered=len(alerts),
+            alerts=[AlertResponse.model_validate(a) for a in alerts],
+        ),
         meta=_build_metadata(request),
         error=None,
     )
