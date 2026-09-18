@@ -7,6 +7,7 @@ from app.models.auth import Permission, Role, RolePermission, Session, User, Use
 from app.models.detection import DetectionRule
 from app.models.event import Event
 from app.models.incident import Incident, IncidentAlert, IncidentEvent, IncidentNote
+from app.models.indicator import Indicator, IndicatorEvent, ThreatIntelligence
 
 __all__ = [
     "Base",
@@ -25,4 +26,7 @@ __all__ = [
     "IncidentEvent",
     "IncidentNote",
     "AuditLog",
+    "Indicator",
+    "IndicatorEvent",
+    "ThreatIntelligence",
 ]

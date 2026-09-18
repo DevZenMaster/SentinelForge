@@ -19,18 +19,26 @@ from app.core.rbac import (
     PERMISSION_EVENTS_CREATE,
     PERMISSION_EVENTS_NORMALIZE,
     PERMISSION_EVENTS_READ,
+    PERMISSION_INTELLIGENCE_CREATE,
+    PERMISSION_INTELLIGENCE_READ,
 )
 from app.db.session import get_db
 from app.models import User
 from app.schemas.alert import AlertResponse
 from app.schemas.detection import DetectionEvaluationResponse
 from app.schemas.event import EventCreateRequest, EventIngestData, EventResponse
+from app.schemas.indicator import EventEnrichmentResponse, IndicatorEnrichmentDetail
 from app.schemas.response import APIResponse, ResponseMetadata
 from app.services.event import (
     evaluate_event_detections,
     get_event_by_id,
     ingest_security_event,
     reprocess_event_normalization,
+)
+from app.services.intelligence import (
+    TargetNotFoundError,
+    enrich_event,
+    get_event_indicators,
 )
 
 router = APIRouter(prefix="/events", tags=["Events"])
@@ -258,6 +266,76 @@ async def evaluate_event(
             alerts_triggered=len(alerts),
             alerts=[AlertResponse.model_validate(a) for a in alerts],
         ),
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.post(
+    "/{event_id}/enrich",
+    response_model=APIResponse[EventEnrichmentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Enrich Event with Threat Intelligence",
+)
+async def enrich_event_endpoint(
+    event_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_INTELLIGENCE_CREATE))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[EventEnrichmentResponse]:
+    """Extract IOCs from event, associate indicator evidence, and correlate threat intelligence.
+
+    Requires `intelligence.create` permission.
+    """
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("User-Agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    try:
+        enrichment = await enrich_event(
+            db=db,
+            event_id=event_id,
+            actor_user_id=current_user.id,
+            request_id=request_id,
+            source_ip=client_ip,
+            user_agent=user_agent,
+        )
+    except TargetNotFoundError as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(err),
+        ) from err
+
+    return APIResponse[EventEnrichmentResponse](
+        data=enrichment,
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.get(
+    "/{event_id}/indicators",
+    response_model=APIResponse[list[IndicatorEnrichmentDetail]],
+    status_code=status.HTTP_200_OK,
+    summary="Get Indicators Associated with Event",
+)
+async def get_event_indicators_endpoint(
+    event_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_INTELLIGENCE_READ))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[list[IndicatorEnrichmentDetail]]:
+    """Retrieve all indicators and correlated threat intelligence associated with an event."""
+    try:
+        indicators = await get_event_indicators(db=db, event_id=event_id)
+    except TargetNotFoundError as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(err),
+        ) from err
+
+    return APIResponse[list[IndicatorEnrichmentDetail]](
+        data=indicators,
         meta=_build_metadata(request),
         error=None,
     )

@@ -6,7 +6,7 @@ from app.models import (
 
 
 def test_registered_tables_presence() -> None:
-    """Verify all 15 primary entities exist within the metadata."""
+    """Verify all 18 primary entities exist within the metadata."""
     expected_tables = {
         "users",
         "roles",
@@ -23,6 +23,9 @@ def test_registered_tables_presence() -> None:
         "incident_events",
         "incident_notes",
         "audit_logs",
+        "indicators",
+        "indicator_events",
+        "threat_intelligence",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables
@@ -225,3 +228,34 @@ def test_incident_notes_foreign_key_actions_and_indexes() -> None:
 
     index_column_sets = [[c.name for c in idx.columns] for idx in table.indexes]
     assert ["incident_id", "created_at"] in index_column_sets
+
+
+def test_indicator_models_constraints_and_foreign_keys() -> None:
+    """Verify Indicator, IndicatorEvent, and ThreatIntelligence constraints and FK actions."""
+    # 1. indicators table
+    ind_table = Base.metadata.tables["indicators"]
+    ind_unique = [
+        [col.name for col in uq.columns] for uq in ind_table.constraints if hasattr(uq, "columns")
+    ]
+    assert ["type", "normalized_value"] in ind_unique
+
+    # 2. indicator_events table (RESTRICT on event_id for evidence preservation)
+    ie_table = Base.metadata.tables["indicator_events"]
+    ie_fk_map = {fk.parent.name: fk for fk in ie_table.foreign_keys}
+    assert ie_fk_map["indicator_id"].ondelete == "CASCADE"
+    assert ie_fk_map["event_id"].ondelete == "RESTRICT"
+
+    ie_unique = [
+        [col.name for col in uq.columns] for uq in ie_table.constraints if hasattr(uq, "columns")
+    ]
+    assert ["indicator_id", "event_id", "extracted_from_field"] in ie_unique
+
+    # 3. threat_intelligence table
+    ti_table = Base.metadata.tables["threat_intelligence"]
+    ti_fk_map = {fk.parent.name: fk for fk in ti_table.foreign_keys}
+    assert ti_fk_map["indicator_id"].ondelete == "CASCADE"
+
+    ti_unique = [
+        [col.name for col in uq.columns] for uq in ti_table.constraints if hasattr(uq, "columns")
+    ]
+    assert ["indicator_id", "source", "source_reference"] in ti_unique

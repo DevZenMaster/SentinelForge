@@ -18,6 +18,7 @@ from app.core.rbac import (
     PERMISSION_INCIDENTS_CREATE,
     PERMISSION_INCIDENTS_READ,
     PERMISSION_INCIDENTS_UPDATE,
+    PERMISSION_INTELLIGENCE_READ,
 )
 from app.db.session import get_db
 from app.models import User
@@ -39,6 +40,7 @@ from app.schemas.incident import (
     IncidentTimelineResponse,
     IncidentUpdateRequest,
 )
+from app.schemas.indicator import IndicatorEnrichmentDetail
 from app.schemas.response import APIResponse, ResponseMetadata
 from app.services.auth import resolve_user_capabilities
 from app.services.incident import (
@@ -65,6 +67,7 @@ from app.services.incident import (
     transition_incident_status,
     update_incident,
 )
+from app.services.intelligence import TargetNotFoundError, get_incident_indicators
 
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
 
@@ -581,3 +584,31 @@ async def get_timeline_endpoint(
         entries=entries,
     )
     return APIResponse(data=resp, meta=_build_metadata(request))
+
+
+@router.get(
+    "/{incident_identifier}/indicators",
+    response_model=APIResponse[list[IndicatorEnrichmentDetail]],
+    status_code=status.HTTP_200_OK,
+    summary="Get Indicators Associated with Incident",
+)
+async def get_incident_indicators_endpoint(
+    incident_identifier: str,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_INTELLIGENCE_READ))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[list[IndicatorEnrichmentDetail]]:
+    """Retrieve indicators linked to an incident across direct and alert evidence."""
+    try:
+        indicators = await get_incident_indicators(db=db, incident_identifier=incident_identifier)
+    except TargetNotFoundError as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(err),
+        ) from err
+
+    return APIResponse[list[IndicatorEnrichmentDetail]](
+        data=indicators,
+        meta=_build_metadata(request),
+        error=None,
+    )

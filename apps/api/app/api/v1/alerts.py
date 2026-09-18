@@ -16,13 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import require_permission
-from app.core.rbac import PERMISSION_ALERTS_READ
+from app.core.rbac import PERMISSION_ALERTS_READ, PERMISSION_INTELLIGENCE_READ
 from app.db.session import get_db
 from app.models import User
 from app.models.alert import Alert, AlertEvent
 from app.schemas.alert import AlertDetailResponse, AlertListResponse, AlertResponse
 from app.schemas.event import EventResponse
+from app.schemas.indicator import IndicatorEnrichmentDetail
 from app.schemas.response import APIResponse, ResponseMetadata
+from app.services.intelligence import TargetNotFoundError, get_alert_indicators
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
@@ -195,6 +197,34 @@ async def get_alert_by_id(
 
     return APIResponse[AlertDetailResponse](
         data=AlertDetailResponse.model_validate(alert_dict),
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.get(
+    "/{alert_id}/indicators",
+    response_model=APIResponse[list[IndicatorEnrichmentDetail]],
+    status_code=status.HTTP_200_OK,
+    summary="Get Indicators Associated with Alert",
+)
+async def get_alert_indicators_endpoint(
+    alert_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(require_permission(PERMISSION_INTELLIGENCE_READ))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> APIResponse[list[IndicatorEnrichmentDetail]]:
+    """Retrieve all indicators associated with an alert via evidence events."""
+    try:
+        indicators = await get_alert_indicators(db=db, alert_id=alert_id)
+    except TargetNotFoundError as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(err),
+        ) from err
+
+    return APIResponse[list[IndicatorEnrichmentDetail]](
+        data=indicators,
         meta=_build_metadata(request),
         error=None,
     )

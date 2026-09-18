@@ -37,6 +37,11 @@ PERMISSION_RULES_UPDATE: Final[str] = "rules.update"
 
 PERMISSION_DETECTIONS_EVALUATE: Final[str] = "detections.evaluate"
 
+PERMISSION_INTELLIGENCE_READ: Final[str] = "intelligence.read"
+PERMISSION_INTELLIGENCE_CREATE: Final[str] = "intelligence.create"
+PERMISSION_INTELLIGENCE_UPDATE: Final[str] = "intelligence.update"
+PERMISSION_INTELLIGENCE_DELETE: Final[str] = "intelligence.delete"
+
 PERMISSION_AUDIT_READ: Final[str] = "audit.read"
 
 # Permission catalog with human-readable descriptions
@@ -58,6 +63,10 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_RULES_CREATE: "Author and deploy new detection rules",
     PERMISSION_RULES_UPDATE: "Tune thresholds and enable/disable detection rules",
     PERMISSION_DETECTIONS_EVALUATE: "Manually trigger detection rule evaluation on security events",
+    PERMISSION_INTELLIGENCE_READ: "Search and view threat indicators and intelligence records",
+    PERMISSION_INTELLIGENCE_CREATE: "Submit threat indicators and intelligence records",
+    PERMISSION_INTELLIGENCE_UPDATE: "Modify indicator status and intelligence records",
+    PERMISSION_INTELLIGENCE_DELETE: "Deactivate or remove threat intelligence records",
     PERMISSION_AUDIT_READ: "Inspect append-only security audit logs",
 }
 
@@ -83,6 +92,10 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_RULES_CREATE,
         PERMISSION_RULES_UPDATE,
         PERMISSION_DETECTIONS_EVALUATE,
+        PERMISSION_INTELLIGENCE_READ,
+        PERMISSION_INTELLIGENCE_CREATE,
+        PERMISSION_INTELLIGENCE_UPDATE,
+        PERMISSION_INTELLIGENCE_DELETE,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_ANALYST: [
@@ -97,10 +110,14 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_RULES_READ,
         PERMISSION_RULES_UPDATE,
         PERMISSION_DETECTIONS_EVALUATE,
+        PERMISSION_INTELLIGENCE_READ,
+        PERMISSION_INTELLIGENCE_CREATE,
+        PERMISSION_INTELLIGENCE_UPDATE,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_VIEWER: [
         PERMISSION_ALERTS_READ,
         PERMISSION_INCIDENTS_READ,
+        PERMISSION_INTELLIGENCE_READ,
     ],
 }
