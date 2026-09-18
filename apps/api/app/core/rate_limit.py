@@ -59,6 +59,7 @@ class InMemorySlidingWindowLimiter:
 # Global rate limiter instances
 auth_rate_limiter = InMemorySlidingWindowLimiter()
 event_rate_limiter = InMemorySlidingWindowLimiter()
+notification_rate_limiter = InMemorySlidingWindowLimiter()
 
 
 def enforce_event_ingest_rate_limit(request: Request, user_id: uuid.UUID | None = None) -> None:
@@ -144,3 +145,27 @@ def enforce_login_rate_limit(request: Request, identifier: str | None = None) ->
                 ),
                 headers={"Retry-After": str(retry_after)},
             )
+
+
+def enforce_notification_rate_limit(
+    request: Request,
+    action: str = "general",
+    user_id: uuid.UUID | None = None,
+    max_requests: int = 30,
+    window_seconds: int = 60,
+) -> None:
+    """Enforce rate limits on notification dispatch, testing, and management actions."""
+    client_ip = request.client.host if request.client else "unknown"
+    key = f"notify:{action}:{user_id or client_ip}"
+    is_limited, retry_after = notification_rate_limiter.is_rate_limited(
+        key, max_requests=max_requests, window_seconds=window_seconds
+    )
+    if is_limited:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Rate limit exceeded for notification action '{action}'. "
+                f"Please try again in {retry_after} seconds."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )

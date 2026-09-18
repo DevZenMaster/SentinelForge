@@ -292,3 +292,13 @@ class EventResponse(BaseModel):
     normalized_at: datetime | None = Field(default=None)
     normalization_errors: list[dict[str, Any]] = Field(default_factory=list)
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventListResponse(BaseModel):
+    """Paginated collection of security events."""
+
+    items: list[EventResponse] = Field(..., description="Security event records for current page")
+    total: int = Field(..., description="Total matching event count")
+    page: int = Field(..., description="Current page index (1-based)")
+    limit: int = Field(..., description="Number of items per page")
+    total_pages: int = Field(..., description="Total pages available")

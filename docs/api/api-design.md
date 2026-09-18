@@ -89,15 +89,54 @@ Errors return appropriate HTTP status codes (`400`, `401`, `403`, `404`, `422`, 
   - **Responses**: `200 OK` with `DetectionEvaluationResponse`, `404 Not Found` if nonexistent.
 - `GET /api/v1/events` - Query normalized security events (paginated, multi-filter).
 
-### Alerts (`/api/v1/alerts`)
-- `GET /api/v1/alerts` - List alerts (filtered by severity, status, rule, source IP, username).
+### Alerts & Detection Operations (`/api/v1/alerts`)
+- `GET /api/v1/alerts` - List alerts (filtered by severity, status, rule ID, rule version, source IP, username, assignee ID, acknowledgement state, date ranges).
   - **Auth**: Required (`alerts.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
-  - **Query Params**: `page` (default 1), `limit` (default 50, max 100), `rule_id`, `severity`, `status`, `source_ip`, `username`.
-  - **Responses**: `200 OK` with paginated `AlertListResponse`.
-- `GET /api/v1/alerts/{id}` - Retrieve alert details and linked triggering evidence events.
+  - **Query Params**: `page` (default 1), `limit` (default 50, max 500), `rule_id`, `rule_version`, `severity`, `status`, `source_ip`, `username`, `assignee_id`, `is_acknowledged`, `created_after`, `created_before`, `sort_by` (allowlisted: `created_at`, `updated_at`, `severity`, `status`, `rule_id`, `rule_version`, `last_seen`, `observed_count`), `sort_order` (`asc` or `desc`).
+  - **Responses**: `200 OK` with paginated `AlertListResponse` including deterministic operational prioritization metadata.
+- `GET /api/v1/alerts/{id}` - Retrieve alert details with constituent forensic evidence, operational metadata, triage notes, correlated incidents, and Phase 8 investigation link.
   - **Auth**: Required (`alerts.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
-  - **Responses**: `200 OK` with `AlertDetailResponse` enclosing constituent `evidence_events` and `evidence_event_ids`, `404 Not Found` if nonexistent.
-- `PATCH /api/v1/alerts/{id}/status` - Update alert status (`OPEN`, `ACKNOWLEDGED`, `INVESTIGATING`, `RESOLVED`, `FALSE_POSITIVE`).
+  - **Responses**: `200 OK` with `AlertDetailResponse`, `404 Not Found` if nonexistent.
+- `POST /api/v1/alerts/{id}/acknowledge` - Explicitly acknowledge an alert.
+  - **Auth**: Required (`alerts.acknowledge` permission; granted to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Payload**: Optional `AlertAcknowledgeRequest` (`comment`).
+  - **Behavior**: Advances status to `ACKNOWLEDGED`, sets `acknowledged_at` and `acknowledged_by_id`, increments `version`, logs `ALERT_ACKNOWLEDGED` audit event.
+- `POST /api/v1/alerts/{id}/assign` - Assign or reassign an alert to an analyst.
+  - **Auth**: Required (`alerts.assign` permission; granted to `ADMIN` and `ANALYST`, `403 Forbidden` for `VIEWER`).
+  - **Payload**: `AlertAssignRequest` (`assigned_to_user_id` [UUID or null]).
+  - **Behavior**: Validates target user exists and is active, records assignment, logs `ALERT_ASSIGNED` or `ALERT_UNASSIGNED`.
+- `POST /api/v1/alerts/{id}/unassign` - Unassign current analyst from an alert.
+  - **Auth**: Required (`alerts.assign` permission; granted to `ADMIN` and `ANALYST`).
+- `POST /api/v1/alerts/{id}/transition` - Deterministic lifecycle state transition.
+  - **Auth**: Required (`alerts.triage` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `AlertStatusTransitionRequest` (`status` [`OPEN`, `ACKNOWLEDGED`, `IN_PROGRESS`, `SUPPRESSED`, `RESOLVED`, `CLOSED`], optional `comment`, optional `expected_version`).
+  - **Validation**: Enforces strict state machine `ALLOWED_ALERT_TRANSITIONS`; rejects same-state and invalid transitions with `400 Bad Request`; validates `expected_version` with `409 Conflict` on race.
+- `PATCH /api/v1/alerts/{id}/status` - Compatibility lifecycle transition endpoint (`alerts.update` permission).
+- `POST /api/v1/alerts/{id}/suppress` - Suppress alert with mandatory justification.
+  - **Auth**: Required (`alerts.suppress` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `AlertSuppressRequest` (`reason` [min 5 chars], optional `suppressed_until` [max 90 days in future]).
+  - **Behavior**: Sets `status = SUPPRESSED`, preserves historical evidence, logs `ALERT_SUPPRESSED`. Never hard-deletes.
+- `POST /api/v1/alerts/{id}/resolve` - Resolve alert with mandatory investigation findings.
+  - **Auth**: Required (`alerts.resolve` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `AlertResolveRequest` (`resolution_notes` [min 5 chars]).
+- `POST /api/v1/alerts/{id}/close` - Close alert case.
+  - **Auth**: Required (`alerts.close` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: Optional `AlertCloseRequest` (`notes`).
+- `POST /api/v1/alerts/{id}/notes` - Append an analyst triage note.
+  - **Auth**: Required (`alerts.notes.create` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `AlertNoteCreateRequest` (`content` [1..10000 chars]).
+  - **Behavior**: HTML-sanitized, append-only, author bound to authenticated session, logs `ALERT_NOTE_CREATED`.
+- `GET /api/v1/alerts/{id}/notes` - List chronological triage notes.
+  - **Auth**: Required (`alerts.notes.read` permission; accessible to `ADMIN`, `ANALYST`, and `VIEWER`).
+- `POST /api/v1/alerts/{id}/incidents` - Link alert to an existing incident case.
+  - **Auth**: Required (`alerts.triage` permission; granted to `ADMIN` and `ANALYST`).
+  - **Payload**: `AlertIncidentLinkRequest` (`incident_id`).
+- `GET /api/v1/alerts/{id}/incidents` - List incidents correlated with an alert.
+  - **Auth**: Required (`alerts.incidents.read` permission; accessible to `ADMIN`, `ANALYST`, `VIEWER`).
+- `GET /api/v1/alerts/{id}/investigations` - Retrieve Phase 8 investigation correlation query anchor URLs.
+  - **Auth**: Required (`alerts.investigations.read` permission; accessible to `ADMIN`, `ANALYST`, `VIEWER`).
+- `GET /api/v1/alerts/{id}/indicators` - Retrieve threat intelligence indicators associated with alert evidence.
+
 
 ### Incidents (`/api/v1/incidents`)
 - `POST /api/v1/incidents` - Create a new incident case file.

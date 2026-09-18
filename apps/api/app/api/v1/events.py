@@ -5,11 +5,13 @@ Provides:
 - GET /api/v1/events/{event_id}: Retrieve normalized security event record by UUID
 """
 
+import math
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
@@ -24,9 +26,15 @@ from app.core.rbac import (
 )
 from app.db.session import get_db
 from app.models import User
+from app.models.event import Event
 from app.schemas.alert import AlertResponse
 from app.schemas.detection import DetectionEvaluationResponse
-from app.schemas.event import EventCreateRequest, EventIngestData, EventResponse
+from app.schemas.event import (
+    EventCreateRequest,
+    EventIngestData,
+    EventListResponse,
+    EventResponse,
+)
 from app.schemas.indicator import EventEnrichmentResponse, IndicatorEnrichmentDetail
 from app.schemas.response import APIResponse, ResponseMetadata
 from app.services.event import (
@@ -127,6 +135,95 @@ async def ingest_event(
 
     return APIResponse[EventIngestData](
         data=ingest_data,
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.get(
+    "",
+    response_model=APIResponse[EventListResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List Normalized Security Events",
+)
+async def list_events_endpoint(
+    request: Request,
+    _current_user: Annotated[User, Depends(require_permission(PERMISSION_EVENTS_READ))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=50, ge=1, le=500, description="Items per page"),
+    source: str | None = Query(default=None, description="Filter by source"),
+    source_type: str | None = Query(default=None, description="Filter by source type"),
+    severity: str | None = Query(default=None, description="Filter by severity"),
+    event_type: str | None = Query(default=None, description="Filter by event type"),
+    action: str | None = Query(default=None, description="Filter by action"),
+    username: str | None = Query(default=None, description="Filter by username"),
+    source_ip: str | None = Query(default=None, description="Filter by source IP"),
+    destination_ip: str | None = Query(default=None, description="Filter by destination IP"),
+    start_time: datetime | None = Query(default=None, description="Timestamp lower bound"),
+    end_time: datetime | None = Query(default=None, description="Timestamp upper bound"),
+) -> APIResponse[EventListResponse]:
+    """Retrieve paginated security event log telemetry with criteria filtering."""
+    stmt = select(Event)
+    count_stmt = select(func.count(Event.id))
+
+    if source:
+        stmt = stmt.where(Event.source == source)
+        count_stmt = count_stmt.where(Event.source == source)
+    if source_type:
+        stmt = stmt.where(Event.source_type == source_type.lower())
+        count_stmt = count_stmt.where(Event.source_type == source_type.lower())
+    if severity:
+        stmt = stmt.where(Event.severity == severity.upper())
+        count_stmt = count_stmt.where(Event.severity == severity.upper())
+    if event_type:
+        stmt = stmt.where(Event.event_type == event_type)
+        count_stmt = count_stmt.where(Event.event_type == event_type)
+    if action:
+        stmt = stmt.where(Event.action == action)
+        count_stmt = count_stmt.where(Event.action == action)
+    if username:
+        stmt = stmt.where(Event.username == username)
+        count_stmt = count_stmt.where(Event.username == username)
+    if source_ip:
+        stmt = stmt.where(Event.source_ip == source_ip)
+        count_stmt = count_stmt.where(Event.source_ip == source_ip)
+    if destination_ip:
+        stmt = stmt.where(Event.destination_ip == destination_ip)
+        count_stmt = count_stmt.where(Event.destination_ip == destination_ip)
+    if start_time:
+        stmt = stmt.where(Event.timestamp >= start_time)
+        count_stmt = count_stmt.where(Event.timestamp >= start_time)
+    if end_time:
+        stmt = stmt.where(Event.timestamp <= end_time)
+        count_stmt = count_stmt.where(Event.timestamp <= end_time)
+
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar_one()
+
+    offset = (page - 1) * limit
+    stmt = stmt.order_by(Event.timestamp.desc()).offset(offset).limit(limit)
+    result = await db.execute(stmt)
+    events = result.scalars().all()
+
+    for ev in events:
+        if ev.ingested_at.tzinfo is None:
+            ev.ingested_at = ev.ingested_at.replace(tzinfo=UTC)
+        if ev.timestamp.tzinfo is None:
+            ev.timestamp = ev.timestamp.replace(tzinfo=UTC)
+        if ev.normalized_at and ev.normalized_at.tzinfo is None:
+            ev.normalized_at = ev.normalized_at.replace(tzinfo=UTC)
+
+    total_pages = math.ceil(total / limit) if total > 0 else 0
+
+    return APIResponse[EventListResponse](
+        data=EventListResponse(
+            items=[EventResponse.model_validate(ev) for ev in events],
+            total=total,
+            page=page,
+            limit=limit,
+            total_pages=total_pages,
+        ),
         meta=_build_metadata(request),
         error=None,
     )

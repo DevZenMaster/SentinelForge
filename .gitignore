@@ -42,6 +42,7 @@ out/
 build/
 dist/
 .turbo/
+*.tsbuildinfo
 
 # Environment and Secrets (Never commit credentials)
 .env

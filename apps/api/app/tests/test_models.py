@@ -18,6 +18,7 @@ def test_registered_tables_presence() -> None:
         "detection_rules",
         "alerts",
         "alert_events",
+        "alert_notes",
         "incidents",
         "incident_alerts",
         "incident_events",
@@ -26,6 +27,10 @@ def test_registered_tables_presence() -> None:
         "indicators",
         "indicator_events",
         "threat_intelligence",
+        "integrations",
+        "notification_policies",
+        "notification_events",
+        "notification_deliveries",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables
@@ -260,3 +265,24 @@ def test_indicator_models_constraints_and_foreign_keys() -> None:
         [col.name for col in uq.columns] for uq in ti_table.constraints if hasattr(uq, "columns")
     ]
     assert ["indicator_id", "source", "source_reference"] in ti_unique
+
+
+def test_alert_model_operations_fields_and_notes_table() -> None:
+    """Verify Alert operational triage fields and alert_notes table constraints."""
+    alerts_table = Base.metadata.tables["alerts"]
+    assert "assignee_id" in alerts_table.c
+    assert "acknowledged_by_id" in alerts_table.c
+    assert "resolved_by_id" in alerts_table.c
+    assert "closed_by_id" in alerts_table.c
+    assert "suppressed_by_id" in alerts_table.c
+    assert "suppression_reason" in alerts_table.c
+    assert "suppressed_until" in alerts_table.c
+    assert "version" in alerts_table.c
+
+    notes_table = Base.metadata.tables["alert_notes"]
+    assert not notes_table.c.content.nullable
+    assert not notes_table.c.alert_id.nullable
+    assert not notes_table.c.author_user_id.nullable
+    notes_fk_map = {fk.parent.name: fk for fk in notes_table.foreign_keys}
+    assert notes_fk_map["alert_id"].ondelete == "CASCADE"
+    assert notes_fk_map["author_user_id"].ondelete == "RESTRICT"

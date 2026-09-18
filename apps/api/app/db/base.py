@@ -6,14 +6,23 @@ UUID primary keys, and timezone-aware UTC timestamp tracking.
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import JSON, DateTime, MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Type that renders as native JSONB in PostgreSQL, and JSON in SQLite (for tests)
 JSON_COMPAT = postgresql.JSONB().with_variant(JSON(), "sqlite")
+
+
+@compiles(UUID, "sqlite")
+def _compile_uuid_sqlite(type_: UUID[Any], compiler: object, **kw: object) -> str:
+    """Compile PostgreSQL UUID as CHAR(36) in SQLite to guarantee TEXT affinity."""
+    return "CHAR(36)"
+
 
 # Explicit naming convention for constraints to ensure deterministic Alembic migrations
 POSTGRES_NAMING_CONVENTION = {

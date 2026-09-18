@@ -26,7 +26,28 @@ class JSONLogFormatter(logging.Formatter):
         "cookie",
         "api_key",
         "credentials",
+        "smtp_password",
+        "secret_token",
+        "auth_token",
+        "bearer",
+        "private_key",
+        "access_token",
+        "refresh_token",
     }
+
+    def _sanitize(self, val: Any) -> Any:
+        """Recursively sanitize sensitive fields in log payloads."""
+        if isinstance(val, dict):
+            sanitized: dict[str, Any] = {}
+            for k, v in val.items():
+                if str(k).lower() in self.REDACTED_KEYS:
+                    sanitized[str(k)] = "[REDACTED]"
+                else:
+                    sanitized[str(k)] = self._sanitize(v)
+            return sanitized
+        if isinstance(val, (list, tuple, set)):
+            return [self._sanitize(item) for item in val]
+        return val
 
     def format(self, record: logging.LogRecord) -> str:
         log_payload: dict[str, Any] = {
@@ -47,13 +68,13 @@ class JSONLogFormatter(logging.Formatter):
         if user_id:
             log_payload["user_id"] = str(user_id)
 
-        # Include custom extra fields while sanitizing sensitive keys
+        # Include custom extra fields while recursively sanitizing sensitive keys
         if hasattr(record, "extra_fields") and isinstance(record.extra_fields, dict):
             for k, v in record.extra_fields.items():
-                if k.lower() in self.REDACTED_KEYS:
-                    log_payload[k] = "[REDACTED]"
+                if str(k).lower() in self.REDACTED_KEYS:
+                    log_payload[str(k)] = "[REDACTED]"
                 else:
-                    log_payload[k] = v
+                    log_payload[str(k)] = self._sanitize(v)
 
         if record.exc_info:
             log_payload["exception"] = self.formatException(record.exc_info)

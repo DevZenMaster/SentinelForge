@@ -5,11 +5,15 @@ stack traces, or sensitive infrastructure paths.
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
+from app.api.deps import require_permission
 from app.core.config import settings
-from app.db.session import check_database_readiness
+from app.core.metrics import system_metrics
+from app.db.session import check_database_readiness, get_pool_status
+from app.models.auth import User
 from app.schemas.health import ServiceHealth
 from app.schemas.response import APIResponse, ResponseMetadata
 
@@ -38,7 +42,7 @@ async def health(request: Request) -> APIResponse[ServiceHealth]:
     return APIResponse[ServiceHealth](
         data=ServiceHealth(
             status=overall_status,
-            version="0.1.0",
+            version=settings.APP_VERSION,
             environment=settings.ENVIRONMENT,
             database=db_status,
         ),
@@ -79,6 +83,31 @@ async def readiness_probe(request: Request, response: Response) -> APIResponse[d
 
     return APIResponse[dict[str, str]](
         data={"status": "ready", "database": "connected"},
+        meta=_build_metadata(request),
+        error=None,
+    )
+
+
+@router.get(
+    "/metrics",
+    response_model=APIResponse[dict[str, Any]],
+    summary="Operational Telemetry Metrics",
+)
+async def get_metrics(
+    request: Request,
+    _current_user: User = Depends(require_permission("audit.read")),
+) -> APIResponse[dict[str, Any]]:
+    """Expose controlled operational metrics to authorized SOC auditors/administrators.
+
+    Strictly protects against high cardinality and credential/payload leakage.
+    """
+    snapshot = system_metrics.get_snapshot()
+    snapshot["database_pool"] = get_pool_status()
+    snapshot["environment"] = settings.ENVIRONMENT
+    snapshot["version"] = settings.APP_VERSION
+
+    return APIResponse[dict[str, Any]](
+        data=snapshot,
         meta=_build_metadata(request),
         error=None,
     )

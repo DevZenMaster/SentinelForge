@@ -38,9 +38,35 @@ from app.schemas.incident import (
     UserSummaryResponse,
 )
 from app.services.auth import record_audit_log
+from app.services.notifications import emit_notification_event
 
 logger = logging.getLogger("sentinelforge.incident")
 _incident_create_lock = asyncio.Lock()
+
+
+async def _safe_notify_incident(
+    db: AsyncSession,
+    incident: Incident,
+    event_type: str,
+) -> None:
+    """Safely emit incident notification event without impacting core transaction."""
+    try:
+        await emit_notification_event(
+            db=db,
+            event_type=event_type,
+            source_resource_type="incident",
+            source_resource_id=str(incident.id),
+            payload_data={
+                "id": str(incident.id),
+                "incident_id": incident.incident_id,
+                "title": incident.title,
+                "severity": incident.severity,
+                "priority": incident.priority,
+                "status": incident.status,
+            },
+        )
+    except Exception:
+        logger.warning(f"Failed to emit notification for {event_type}", exc_info=True)
 
 
 # ==============================================================================
@@ -323,6 +349,8 @@ async def create_incident(
             source_ip=source_ip,
             user_agent=user_agent,
         )
+
+    await _safe_notify_incident(db, incident, "INCIDENT_CREATED")
 
     return await get_incident_by_identifier(db, str(incident.id))
 
@@ -662,6 +690,13 @@ async def transition_incident_status(
         source_ip=source_ip,
         user_agent=user_agent,
     )
+
+    notif_event_type = (
+        "INCIDENT_RESOLVED"
+        if target_status == IncidentStatus.RESOLVED.value
+        else "INCIDENT_STATE_CHANGED"
+    )
+    await _safe_notify_incident(db, incident, notif_event_type)
 
     return await get_incident_by_identifier(db, str(incident.id))
 

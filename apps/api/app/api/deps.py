@@ -100,6 +100,32 @@ def require_permission(permission: str) -> Callable[..., Awaitable[User]]:
     return permission_dependency
 
 
+def require_any_permission(*required_permissions: str) -> Callable[..., Awaitable[User]]:
+    """Dependency factory enforcing that user possesses at least one permission."""
+
+    async def permission_dependency(
+        context: Annotated[tuple[User, list[str], list[str]], Depends(get_current_user_context)],
+    ) -> User:
+        user, _roles, permissions = context
+
+        if user.is_superuser or any(p in permissions for p in required_permissions):
+            return user
+
+        logger.warning(
+            f"Access denied for user {user.id} ({user.username}): missing {required_permissions}",
+            extra={"user_id": str(user.id)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Forbidden: You do not possess any of the required permissions: "
+                f"{list(required_permissions)}."
+            ),
+        )
+
+    return permission_dependency
+
+
 def require_role(role_name: str) -> Callable[..., Awaitable[User]]:
     """Dependency factory enforcing that the authenticated user holds a specific role."""
 

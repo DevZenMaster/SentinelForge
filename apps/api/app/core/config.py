@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     )
 
     # Application Metadata
+    APP_VERSION: str = "0.1.0"
     ENVIRONMENT: Literal["development", "testing", "production"] = "development"
     DEBUG: bool = False
     PROJECT_NAME: str = "SentinelForge"
@@ -54,13 +55,21 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60, ge=1, le=10080)
     ALGORITHM: str = "HS256"
 
-    # PostgreSQL Database Settings
+    # PostgreSQL Database Settings & Connection Pool
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str = "sentinelforge"
     POSTGRES_PASSWORD: str = "sentinel_dev_password_change_me"  # noqa: S105
     POSTGRES_DB: str = "sentinelforge_db"
     DATABASE_URL: str | None = None
+    DB_POOL_SIZE: int = Field(default=20, ge=1, le=100)
+    DB_MAX_OVERFLOW: int = Field(default=10, ge=0, le=100)
+    DB_POOL_TIMEOUT: float = Field(default=30.0, ge=1.0, le=120.0)
+    DB_POOL_RECYCLE: int = Field(default=1800, ge=60, le=7200)
+    DB_POOL_PRE_PING: bool = True
+
+    # Reverse Proxy & Edge Security
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
 
     # CORS Settings
     BACKEND_CORS_ORIGINS: Annotated[list[str], BeforeValidator(_parse_cors_origins)] = [
@@ -81,6 +90,24 @@ class Settings(BaseSettings):
     SESSION_EXPIRE_HOURS: int = Field(default=12, ge=1, le=168)
     CSRF_PROTECTION_ENABLED: bool = True
 
+    # Notification & Integration Settings (Phase 13)
+    NOTIFICATIONS_ENABLED: bool = True
+    WEBHOOK_TIMEOUT_SECONDS: float = Field(default=10.0, ge=1.0, le=60.0)
+    WEBHOOK_CONNECT_TIMEOUT_SECONDS: float = Field(default=5.0, ge=0.5, le=30.0)
+    WEBHOOK_MAX_PAYLOAD_BYTES: int = Field(default=65536, ge=1024, le=1048576)
+    WEBHOOK_MAX_RESPONSE_BYTES: int = Field(default=16384, ge=512, le=262144)
+    WEBHOOK_ALLOW_INSECURE_HTTP: bool = False
+    NOTIFICATION_MAX_RETRIES: int = Field(default=3, ge=1, le=10)
+    NOTIFICATION_MAX_DESTINATIONS_PER_POLICY: int = Field(default=10, ge=1, le=50)
+    NOTIFICATION_BASE_BACKOFF_SECONDS: int = Field(default=5, ge=1, le=60)
+    NOTIFICATION_MAX_BACKOFF_SECONDS: int = Field(default=300, ge=10, le=3600)
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = Field(default=587, ge=1, le=65535)
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM_EMAIL: str = "notifications@sentinelforge.local"
+    SMTP_USE_TLS: bool = True
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def async_database_url(self) -> str:
@@ -98,7 +125,15 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         """Enforce fail-closed security invariants in production environments."""
+        return self._check_production_security()
+
+    def _check_production_security(self) -> "Settings":
         if self.ENVIRONMENT == "production":
+            if self.DEBUG:
+                raise ValueError(
+                    "CRITICAL: DEBUG mode must be disabled (False) in production environment."
+                )
+
             insecure_keys = {
                 "dev-insecure-secret-key-must-be-changed-in-production-0987654321",
                 "change-this-to-a-secure-random-secret-key-in-production",
@@ -116,9 +151,20 @@ class Settings(BaseSettings):
                     "CRITICAL: Wildcard CORS origin ('*') is strictly forbidden in production."
                 )
 
-            if self.POSTGRES_PASSWORD in {"sentinel_dev_password_change_me", "postgres", ""}:
+            if not self.POSTGRES_PASSWORD or self.POSTGRES_PASSWORD in {
+                "sentinel_dev_password_change_me",
+                "postgres",
+                "password",
+                "",
+            }:
                 raise ValueError(
                     "CRITICAL: Default database password detected in production configuration."
+                )
+
+            if not self.POSTGRES_USER or not self.POSTGRES_DB:
+                raise ValueError(
+                    "CRITICAL: Database user and database name must be "
+                    "explicitly configured in production."
                 )
 
             if not self.SESSION_COOKIE_SECURE:
@@ -131,6 +177,12 @@ class Settings(BaseSettings):
                     "CRITICAL: In production environment, SESSION_COOKIE_HTTPONLY must be True."
                 )
 
+            if self.WEBHOOK_ALLOW_INSECURE_HTTP:
+                raise ValueError(
+                    "CRITICAL: In production environment, "
+                    "WEBHOOK_ALLOW_INSECURE_HTTP must be False."
+                )
+
         # In all environments, disallow wildcard origin with credentials
         if "*" in self.BACKEND_CORS_ORIGINS and len(self.BACKEND_CORS_ORIGINS) > 1:
             raise ValueError(
@@ -138,6 +190,17 @@ class Settings(BaseSettings):
             )
 
         return self
+
+
+def validate_startup_configuration(cfg: Settings | None = None) -> None:
+    """Explicit startup validator executed during application lifespan.
+
+    Fails fast with detailed, actionable diagnostics if production configuration invariants
+    are violated.
+    """
+    conf = cfg or settings
+    if conf.ENVIRONMENT == "production":
+        conf._check_production_security()
 
 
 # Global singleton settings instance

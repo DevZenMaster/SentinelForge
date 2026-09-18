@@ -168,6 +168,34 @@ async def revoke_session(db: AsyncSession, raw_token: str) -> tuple[bool, uuid.U
     return True, user_id
 
 
+async def revoke_all_user_sessions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    except_token_hash: str | None = None,
+) -> int:
+    """Invalidate all active sessions for a user, optionally preserving a specific session.
+
+    Used during password change (preserving current session) or account deactivation/deletion
+    (revoking all sessions).
+    """
+    now = datetime.now(UTC)
+    stmt = select(Session).where(
+        Session.user_id == user_id,
+        Session.revoked_at.is_(None),
+    )
+    if except_token_hash:
+        stmt = stmt.where(Session.session_token_hash != except_token_hash)
+
+    result = await db.execute(stmt)
+    active_sessions = result.scalars().all()
+
+    for s in active_sessions:
+        s.revoked_at = now
+
+    await db.commit()
+    return len(active_sessions)
+
+
 async def resolve_user_capabilities(
     db: AsyncSession, user_id: uuid.UUID
 ) -> tuple[list[str], list[str]]:

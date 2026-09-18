@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.metrics import system_metrics
 from app.detection.base import BaseDetectionRule
 from app.detection.configurable import ConfigurableDetectionRule
 from app.detection.models import DetectionContext, DetectionResult
@@ -30,6 +31,7 @@ from app.detection.rules import (
 from app.models.alert import Alert, AlertEvent
 from app.models.detection import DetectionRule
 from app.models.event import Event
+from app.services.notifications import emit_notification_event
 
 logger = logging.getLogger("sentinelforge.detection")
 
@@ -238,6 +240,30 @@ class DetectionEngine:
                 await self._link_contributing_events(db, alert.id, result.contributing_event_ids)
             await db.commit()
             await db.refresh(alert)
+
+            system_metrics.record_alert_event("created")
+            system_metrics.record_detection_event(matched=1)
+
+            try:
+                await emit_notification_event(
+                    db=db,
+                    event_type="ALERT_CREATED",
+                    source_resource_type="alert",
+                    source_resource_id=str(alert.id),
+                    payload_data={
+                        "id": str(alert.id),
+                        "title": alert.title,
+                        "severity": alert.severity,
+                        "status": alert.status,
+                        "rule_id": alert.rule_id,
+                        "rule_version": alert.rule_version,
+                        "source_ip": alert.source_ip,
+                        "username": alert.username,
+                    },
+                    correlation_id=alert.correlation_key,
+                )
+            except Exception:
+                logger.warning("Failed to emit ALERT_CREATED notification event", exc_info=True)
 
             logger.info(
                 "Alert generated and persisted",

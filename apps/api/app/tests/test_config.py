@@ -21,6 +21,7 @@ def test_settings_production_fail_closed_insecure_secret() -> None:
     with pytest.raises(ValidationError, match="SECRET_KEY must be a cryptographically secure"):
         Settings(
             ENVIRONMENT="production",
+            DEBUG=False,
             SECRET_KEY="dev-insecure-secret-key-must-be-changed-in-production-0987654321",
             POSTGRES_PASSWORD="a-very-strong-production-database-password-12345",
         )
@@ -31,6 +32,7 @@ def test_settings_production_fail_closed_wildcard_cors() -> None:
     with pytest.raises(ValidationError, match="Wildcard CORS origin"):
         Settings(
             ENVIRONMENT="production",
+            DEBUG=False,
             SECRET_KEY="this-is-a-valid-production-secret-key-exceeding-32-bytes-length",
             POSTGRES_PASSWORD="a-very-strong-production-database-password-12345",
             BACKEND_CORS_ORIGINS=["*"],
@@ -42,6 +44,7 @@ def test_settings_production_fail_closed_default_db_password() -> None:
     with pytest.raises(ValidationError, match="Default database password detected"):
         Settings(
             ENVIRONMENT="production",
+            DEBUG=False,
             SECRET_KEY="this-is-a-valid-production-secret-key-exceeding-32-bytes-length",
             POSTGRES_PASSWORD="sentinel_dev_password_change_me",
         )

@@ -9,21 +9,27 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import api_v1_router
-from app.core.config import settings
+from app.core.config import settings, validate_startup_configuration
+from app.core.errors import ErrorCode, create_error_response
 from app.core.logging import setup_logging
 from app.core.middleware import (
     CSRFProtectionMiddleware,
     RequestCorrelationMiddleware,
     SecurityHeadersMiddleware,
 )
-from app.db.session import engine
+from app.db.session import check_database_readiness, engine
+from app.services.notifications.delivery import (
+    drain_background_tasks,
+    reconcile_stale_deliveries,
+)
 
 # Initialize structured logging subsystem
 logger = setup_logging(debug=settings.DEBUG)
@@ -33,11 +39,38 @@ logger = setup_logging(debug=settings.DEBUG)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifespan context managing startup and graceful shutdown."""
     logger.info(
-        f"Starting {settings.PROJECT_NAME} API in [{settings.ENVIRONMENT}] environment.",
-        extra={"extra_fields": {"environment": settings.ENVIRONMENT, "debug": settings.DEBUG}},
+        f"Starting {settings.PROJECT_NAME} API v{settings.APP_VERSION} "
+        f"in [{settings.ENVIRONMENT}] environment.",
+        extra={
+            "extra_fields": {
+                "environment": settings.ENVIRONMENT,
+                "debug": settings.DEBUG,
+                "version": settings.APP_VERSION,
+            }
+        },
     )
+
+    # 1. Enforce fail-closed production configuration validation
+    validate_startup_configuration(settings)
+
+    # 2. Reconcile any deliveries stuck in DELIVERING state from prior process crashes
+    try:
+        reconciled = await reconcile_stale_deliveries()
+        if reconciled > 0:
+            logger.info(
+                f"Startup reconciliation restored {reconciled} interrupted notification job(s)."
+            )
+    except Exception as exc:
+        logger.warning(f"Startup delivery reconciliation encountered an issue: {exc}")
+
     yield
-    logger.info("Shutting down SentinelForge API. Disposing database connection pool.")
+
+    # 3. Graceful shutdown: Drain in-flight background delivery tasks
+    logger.info("Shutting down SentinelForge API. Draining in-flight background tasks...")
+    await drain_background_tasks(timeout=10.0)
+
+    # 4. Dispose database connection pool
+    logger.info("Disposing database connection pool.")
     await engine.dispose()
 
 
@@ -45,7 +78,7 @@ def create_app() -> FastAPI:
     """Application factory for SentinelForge API."""
     app = FastAPI(
         title=settings.PROJECT_NAME,
-        version="0.1.0",
+        version=settings.APP_VERSION,
         description="Production-style lightweight SIEM API foundation.",
         docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
         redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
@@ -54,6 +87,34 @@ def create_app() -> FastAPI:
         else None,
         lifespan=lifespan,
     )
+
+    # Root-level health/liveness/readiness probes for container orchestration & load balancers
+    @app.get("/live", tags=["Probes"], include_in_schema=False)
+    async def root_live() -> dict[str, str]:
+        """Liveness probe: verifies application process is running (zero DB queries)."""
+        return {"status": "live"}
+
+    @app.get("/ready", tags=["Probes"], include_in_schema=False)
+    async def root_ready(response: Response) -> dict[str, str]:
+        """Readiness probe: verifies PostgreSQL database connectivity."""
+        db_ready = await check_database_readiness()
+        if not db_ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"status": "not_ready", "database": "unreachable"}
+        return {"status": "ready", "database": "connected"}
+
+    @app.get("/health", tags=["Probes"], include_in_schema=False)
+    async def root_health(response: Response) -> dict[str, Any]:
+        """Root health probe: overall service health summary."""
+        db_ready = await check_database_readiness()
+        if not db_ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "healthy" if db_ready else "degraded",
+            "version": settings.APP_VERSION,
+            "environment": settings.ENVIRONMENT,
+            "database": "connected" if db_ready else "unreachable",
+        }
 
     # 1. Add Request Correlation and Access Logging Middleware
     app.add_middleware(RequestCorrelationMiddleware)
@@ -140,6 +201,21 @@ def create_app() -> FastAPI:
                 },
             },
             headers={"X-Request-ID": str(request_id)},
+        )
+
+    @app.exception_handler(DBAPIError)
+    async def dbapi_exception_handler(request: Request, exc: DBAPIError) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", "unknown")
+        logger.critical(
+            f"Database operational exception on {request.method} {request.url.path}: {exc}",
+            exc_info=True,
+            extra={"request_id": str(request_id)},
+        )
+        return create_error_response(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            code=ErrorCode.DATABASE_ERROR,
+            message="A database operational error occurred. Please contact the SOC administrator.",
+            request_id=str(request_id),
         )
 
     @app.exception_handler(Exception)

@@ -19,10 +19,27 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import settings
+from app.core.metrics import system_metrics
 
 logger = logging.getLogger("sentinelforge.access")
 
 SAFE_REQUEST_ID_REGEX = re.compile(r"^[a-zA-Z0-9_\-:.]{1,64}$")
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract authoritative client IP, strictly validating proxy headers.
+
+    X-Forwarded-For is ONLY trusted if the immediate connecting socket client IP
+    is present in the explicitly configured settings.TRUSTED_PROXIES list.
+    """
+    client_host = request.client.host if request.client else "unknown"
+    if client_host in settings.TRUSTED_PROXIES:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            ips = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+            if ips:
+                return ips[0]
+    return client_host
 
 
 class RequestCorrelationMiddleware(BaseHTTPMiddleware):
@@ -38,6 +55,9 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
         else:
             request_id = f"req-{uuid.uuid4().hex[:16]}"
         request.state.request_id = request_id
+
+        client_ip = get_client_ip(request)
+        request.state.client_ip = client_ip
 
         # Enforce maximum payload size
         # (Content-Length check or streaming check for chunked/missing header)
@@ -103,6 +123,9 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
 
             response.headers["X-Request-ID"] = request_id
 
+            # Record operational metrics
+            system_metrics.record_request(request.method, response.status_code, duration_ms)
+
             # Log access telemetry as structured record
             logger.info(
                 f"{request.method} {request.url.path} {response.status_code} ({duration_ms}ms)",
@@ -113,13 +136,14 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
                         "path": request.url.path,
                         "status_code": response.status_code,
                         "duration_ms": duration_ms,
-                        "client_ip": request.client.host if request.client else "unknown",
+                        "client_ip": client_ip,
                     },
                 },
             )
             return response
         except Exception as exc:
             duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            system_metrics.record_request(request.method, 500, duration_ms)
             logger.error(
                 f"Unhandled error processing {request.method} {request.url.path}: {exc}",
                 exc_info=True,
