@@ -89,24 +89,105 @@ Detection engineering in SentinelForge relies on **deterministic, rule-based sta
 
 ## Detection Rule Data Model Specification
 
-Rules are persisted and managed via the `detection_rules` table:
+Rules are persisted and managed via the `detection_rules` table supporting versioning and lifecycle tracking:
 
 ```sql
 CREATE TABLE detection_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    rule_id VARCHAR(32) UNIQUE NOT NULL,
+    rule_id VARCHAR(32) NOT NULL,           -- Stable identifier e.g. RULE-001
+    version INTEGER NOT NULL DEFAULT 1,     -- Monotonically incrementing version number
     name VARCHAR(128) NOT NULL,
     description TEXT NOT NULL,
     severity VARCHAR(16) NOT NULL,          -- CRITICAL, HIGH, MEDIUM, LOW, INFO
+    category VARCHAR(32) NOT NULL DEFAULT 'security',
+    status VARCHAR(16) NOT NULL DEFAULT 'DRAFT',  -- DRAFT, ACTIVE, DISABLED, DEPRECATED
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     event_type VARCHAR(32) NOT NULL,        -- authentication, web, network, system, etc.
     threshold INTEGER NOT NULL,
     time_window_seconds INTEGER NOT NULL,
     conditions JSONB NOT NULL DEFAULT '{}', -- declarative criteria (actions, filters, distinct fields)
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    activated_at TIMESTAMPTZ,
+    activated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT uq_detection_rules_rule_id_version UNIQUE (rule_id, version)
 );
+
+-- Partial unique index guaranteeing at most ONE active version per rule_id
+CREATE UNIQUE INDEX uq_detection_rules_rule_id_active ON detection_rules (rule_id) WHERE status = 'ACTIVE';
 ```
+
+---
+
+## Rule Lifecycle & State Machine (Phase 9)
+
+Detection rules transition through a deterministic server-side state machine:
+
+```text
+       ┌────────┐
+       │ DRAFT  │
+       └───┬─┬──┘
+           │ └─────────────────────────┐
+           ▼                           │
+      ┌─────────┐                      │
+ ┌───►│ ACTIVE  │                      │
+ │    └───┬─┬───┘                      │
+ │        │ │                          │
+ │        ▼ ▼                          ▼
+ │   ┌──────────┐               ┌────────────┐
+ └───┤ DISABLED │──────────────►│ DEPRECATED │ (Terminal)
+     └──────────┘               └────────────┘
+```
+
+- **DRAFT**: Newly authored rule definitions or revision drafts. Not evaluated by detection engine. Editable.
+- **ACTIVE**: Authoritative production version. Evaluated by engine. Strictly immutable. Max 1 active version per `rule_id`.
+- **DISABLED**: Temporarily deactivated rule version. Not evaluated by detection engine. Strictly immutable.
+- **DEPRECATED**: Permanently retired rule version. Terminal state — cannot be reactivated. Strictly immutable.
+
+---
+
+## Strict Rule Immutability & Versioning
+
+- **Immutable Published Versions**: Once a rule reaches `ACTIVE`, `DISABLED`, or `DEPRECATED` status, its conditions, thresholds, and detection logic cannot be modified in place.
+- **Version Branching**: To modify an existing rule, analysts create a new version (`vN+1`) via `POST /api/v1/detection-rules/{rule_id}/versions`, which starts as `DRAFT`.
+- **Historical Alert Traceability**: Historical alerts retain immutable references to the exact `rule_id` and `rule_version` that triggered them. Activating a newer version never rewrites historical records.
+
+---
+
+## Structured Declarative Condition Schema & Validation
+
+Arbitrary code, eval, exec, and raw SQL execution are strictly prohibited. Rule logic is represented as structured JSON data:
+
+- **Supported Operators**: `equals`, `not_equals`, `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`, `contains`, `starts_with`, `ends_with`, `in`, `distinct_count`.
+- **Supported Fields**: `action`, `source_ip`, `destination_ip`, `username`, `destination_port`, `source_port`, `source`, `source_type`, `outcome`, `attributes.*`.
+- **Supported Group By Keys**: `source_ip`, `destination_ip`, `username`.
+- **Aggregations**: `count` (default) or `distinct_count` (requires `distinct_field`).
+- **Resource Bounds**:
+  - `1 <= threshold <= 10000`
+  - `10 <= time_window_seconds <= 86400`
+  - Maximum 10 filters per rule
+  - Max string value length: 255 characters
+  - Max `in` list items: 100 items
+
+---
+
+## Detection Engineering REST APIs (`/api/v1/detection-rules`)
+
+| Method | Path | Permission | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/detection-rules` | `detection_rules.read` | List detection rules (paginated, filterable) |
+| `POST` | `/api/v1/detection-rules` | `detection_rules.create` | Author a new detection rule (starts as DRAFT v1) |
+| `POST` | `/api/v1/detection-rules/validate` | `detection_rules.read` | Dry-run validation of rule definition |
+| `GET` | `/api/v1/detection-rules/{rule_id}` | `detection_rules.read` | Get active or latest version of rule |
+| `GET` | `/api/v1/detection-rules/{rule_id}/versions` | `detection_rules.read` | Get version history for rule |
+| `POST` | `/api/v1/detection-rules/{rule_id}/versions` | `detection_rules.create` | Author new version draft (vN+1) |
+| `GET` | `/api/v1/detection-rules/{rule_id}/versions/{v}` | `detection_rules.read` | Get exact version definition |
+| `PUT` | `/api/v1/detection-rules/{rule_id}/versions/{v}` | `detection_rules.update` | Modify DRAFT version definition |
+| `POST` | `/api/v1/detection-rules/{rule_id}/versions/{v}/activate` | `detection_rules.activate` | Promote version to ACTIVE |
+| `POST` | `/api/v1/detection-rules/{rule_id}/versions/{v}/disable` | `detection_rules.disable` | Deactivate ACTIVE version to DISABLED |
+| `POST` | `/api/v1/detection-rules/{rule_id}/versions/{v}/deprecate` | `detection_rules.deprecate` | Retire version to DEPRECATED |
 
 ---
 

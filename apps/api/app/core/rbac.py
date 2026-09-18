@@ -35,6 +35,13 @@ PERMISSION_RULES_READ: Final[str] = "rules.read"
 PERMISSION_RULES_CREATE: Final[str] = "rules.create"
 PERMISSION_RULES_UPDATE: Final[str] = "rules.update"
 
+PERMISSION_DETECTION_RULES_READ: Final[str] = "detection_rules.read"
+PERMISSION_DETECTION_RULES_CREATE: Final[str] = "detection_rules.create"
+PERMISSION_DETECTION_RULES_UPDATE: Final[str] = "detection_rules.update"
+PERMISSION_DETECTION_RULES_ACTIVATE: Final[str] = "detection_rules.activate"
+PERMISSION_DETECTION_RULES_DISABLE: Final[str] = "detection_rules.disable"
+PERMISSION_DETECTION_RULES_DEPRECATE: Final[str] = "detection_rules.deprecate"
+
 PERMISSION_DETECTIONS_EVALUATE: Final[str] = "detections.evaluate"
 
 PERMISSION_INTELLIGENCE_READ: Final[str] = "intelligence.read"
@@ -64,6 +71,12 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_RULES_READ: "Inspect detection rules and threshold configurations",
     PERMISSION_RULES_CREATE: "Author and deploy new detection rules",
     PERMISSION_RULES_UPDATE: "Tune thresholds and enable/disable detection rules",
+    PERMISSION_DETECTION_RULES_READ: "Inspect detection rules and version histories",
+    PERMISSION_DETECTION_RULES_CREATE: "Author new detection rules and drafts",
+    PERMISSION_DETECTION_RULES_UPDATE: "Modify draft detection rule definitions",
+    PERMISSION_DETECTION_RULES_ACTIVATE: "Activate detection rule versions into production",
+    PERMISSION_DETECTION_RULES_DISABLE: "Deactivate active detection rule versions",
+    PERMISSION_DETECTION_RULES_DEPRECATE: "Permanently deprecate detection rule versions",
     PERMISSION_DETECTIONS_EVALUATE: "Manually trigger detection rule evaluation on security events",
     PERMISSION_INTELLIGENCE_READ: "Search and view threat indicators and intelligence records",
     PERMISSION_INTELLIGENCE_CREATE: "Submit threat indicators and intelligence records",
@@ -96,6 +109,12 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_RULES_READ,
         PERMISSION_RULES_CREATE,
         PERMISSION_RULES_UPDATE,
+        PERMISSION_DETECTION_RULES_READ,
+        PERMISSION_DETECTION_RULES_CREATE,
+        PERMISSION_DETECTION_RULES_UPDATE,
+        PERMISSION_DETECTION_RULES_ACTIVATE,
+        PERMISSION_DETECTION_RULES_DISABLE,
+        PERMISSION_DETECTION_RULES_DEPRECATE,
         PERMISSION_DETECTIONS_EVALUATE,
         PERMISSION_INTELLIGENCE_READ,
         PERMISSION_INTELLIGENCE_CREATE,
@@ -115,6 +134,11 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INCIDENTS_UPDATE,
         PERMISSION_RULES_READ,
         PERMISSION_RULES_UPDATE,
+        PERMISSION_DETECTION_RULES_READ,
+        PERMISSION_DETECTION_RULES_CREATE,
+        PERMISSION_DETECTION_RULES_UPDATE,
+        PERMISSION_DETECTION_RULES_ACTIVATE,
+        PERMISSION_DETECTION_RULES_DISABLE,
         PERMISSION_DETECTIONS_EVALUATE,
         PERMISSION_INTELLIGENCE_READ,
         PERMISSION_INTELLIGENCE_CREATE,
@@ -125,6 +149,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
     ROLE_VIEWER: [
         PERMISSION_ALERTS_READ,
         PERMISSION_INCIDENTS_READ,
+        PERMISSION_DETECTION_RULES_READ,
         PERMISSION_INTELLIGENCE_READ,
         PERMISSION_INVESTIGATIONS_READ,
     ],

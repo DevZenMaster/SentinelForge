@@ -12,16 +12,60 @@ import logging
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.detection.base import BaseDetectionRule
+from app.detection.configurable import ConfigurableDetectionRule
 from app.detection.models import DetectionContext, DetectionResult
 from app.detection.registry import RuleRegistry, default_rule_registry
+from app.detection.rules import (
+    Rule001BruteForceLogin,
+    Rule002AccountSpray,
+    Rule003SuspiciousLoginFollowingFailures,
+    Rule004HttpAuthAbuse,
+    Rule005PortScan,
+)
 from app.models.alert import Alert, AlertEvent
+from app.models.detection import DetectionRule
 from app.models.event import Event
 
 logger = logging.getLogger("sentinelforge.detection")
+
+
+def build_rule_from_model(model: DetectionRule) -> BaseDetectionRule:
+    """Instantiate appropriate rule instance from persistent DetectionRule model."""
+    rule_cls_map: dict[str, type[BaseDetectionRule]] = {
+        "RULE-001": Rule001BruteForceLogin,
+        "RULE-002": Rule002AccountSpray,
+        "RULE-003": Rule003SuspiciousLoginFollowingFailures,
+        "RULE-004": Rule004HttpAuthAbuse,
+        "RULE-005": Rule005PortScan,
+    }
+    cls = rule_cls_map.get(model.rule_id)
+    if cls is not None:
+        return cls(
+            rule_id=model.rule_id,
+            version=model.version,
+            name=model.name,
+            description=model.description,
+            severity=model.severity,
+            event_type=model.event_type,
+            threshold=model.threshold,
+            time_window_seconds=model.time_window_seconds,
+        )
+    return ConfigurableDetectionRule(
+        rule_id=model.rule_id,
+        version=model.version,
+        name=model.name,
+        description=model.description,
+        severity=model.severity,
+        event_type=model.event_type,
+        threshold=model.threshold,
+        time_window_seconds=model.time_window_seconds,
+        conditions=model.conditions,
+    )
 
 
 class DetectionEngine:
@@ -29,6 +73,37 @@ class DetectionEngine:
 
     def __init__(self, registry: RuleRegistry | None = None) -> None:
         self.registry = registry or default_rule_registry
+        self._custom_registry = registry is not None
+
+    async def get_active_rules_for_event(
+        self, db: AsyncSession, event_type: str
+    ) -> list[BaseDetectionRule]:
+        """Fetch active detection rules for the target event type.
+
+        If a custom registry was explicitly passed to the engine, evaluates rules from it.
+        Otherwise, inspects the database: only rules with status == 'ACTIVE' execute.
+        If the database is unseeded (0 rules in table), falls back to the default registry.
+        """
+        if self._custom_registry:
+            return self.registry.get_rules_for_event(event_type)
+
+        stmt = select(DetectionRule).where(
+            DetectionRule.status == "ACTIVE",
+            DetectionRule.event_type == event_type,
+        )
+        active_models = (await db.execute(stmt)).scalars().all()
+        if active_models:
+            return [build_rule_from_model(m) for m in active_models]
+
+        # Check whether table is populated or empty
+        count_stmt = select(func.count(DetectionRule.id))
+        total_rules = (await db.execute(count_stmt)).scalar() or 0
+        if total_rules > 0:
+            # Table contains rules, but none are ACTIVE for this event_type
+            return []
+
+        # Empty table fallback for unseeded test fixtures
+        return self.registry.get_rules_for_event(event_type)
 
     async def evaluate_event(
         self,
@@ -43,7 +118,7 @@ class DetectionEngine:
         Returns:
             list[Alert]: Created or deduplicated/updated alerts.
         """
-        rules = self.registry.get_rules_for_event(event.event_type)
+        rules = await self.get_active_rules_for_event(db, event.event_type)
         if not rules:
             return []
 
@@ -78,7 +153,22 @@ class DetectionEngine:
         rule_id: str,
     ) -> DetectionResult | None:
         """Evaluate a single rule by ID against an event without persisting alerts."""
-        rule = self.registry.get_rule(rule_id)
+        if self._custom_registry:
+            rule: BaseDetectionRule | None = self.registry.get_rule(rule_id)
+        else:
+            stmt = select(DetectionRule).where(
+                DetectionRule.rule_id == rule_id,
+                DetectionRule.status == "ACTIVE",
+            )
+            model = (await db.execute(stmt)).scalar_one_or_none()
+            if model is not None:
+                rule = build_rule_from_model(model)
+            else:
+                total = (await db.execute(select(func.count(DetectionRule.id)))).scalar() or 0
+                if total > 0:
+                    return None
+                rule = self.registry.get_rule(rule_id)
+
         if not rule:
             return None
         context = DetectionContext(event=event, db=db)

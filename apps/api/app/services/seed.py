@@ -131,6 +131,8 @@ DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
             "credential brute-force attack."
         ),
         "severity": "HIGH",
+        "category": "authentication",
+        "status": "ACTIVE",
         "enabled": True,
         "event_type": "authentication",
         "threshold": 5,
@@ -147,6 +149,8 @@ DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
             "account lock attack."
         ),
         "severity": "HIGH",
+        "category": "authentication",
+        "status": "ACTIVE",
         "enabled": True,
         "event_type": "authentication",
         "threshold": 10,
@@ -163,6 +167,8 @@ DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
             "successful brute-force or credential compromise."
         ),
         "severity": "HIGH",
+        "category": "authentication",
+        "status": "ACTIVE",
         "enabled": True,
         "event_type": "authentication",
         "threshold": 3,
@@ -183,6 +189,8 @@ DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
             "endpoint enumeration."
         ),
         "severity": "MEDIUM",
+        "category": "web",
+        "status": "ACTIVE",
         "enabled": True,
         "event_type": "web",
         "threshold": 15,
@@ -199,6 +207,8 @@ DEFAULT_DETECTION_RULES: list[dict[str, Any]] = [
             "port scanning tools (e.g. Nmap, Masscan)."
         ),
         "severity": "HIGH",
+        "category": "network",
+        "status": "ACTIVE",
         "enabled": True,
         "event_type": "network",
         "threshold": 10,
@@ -230,6 +240,8 @@ async def seed_detection_rules(db: AsyncSession) -> int:
                 name=str(rule_data["name"]),
                 description=str(rule_data["description"]),
                 severity=str(rule_data["severity"]),
+                category=str(rule_data.get("category", "security")),
+                status=str(rule_data.get("status", "ACTIVE")),
                 enabled=bool(rule_data["enabled"]),
                 event_type=str(rule_data["event_type"]),
                 threshold=int(rule_data["threshold"]),

@@ -24,6 +24,35 @@ class BaseDetectionRule(ABC):
     time_window_seconds: int
     threshold: int
 
+    def __init__(
+        self,
+        *,
+        rule_id: str | None = None,
+        name: str | None = None,
+        version: int | None = None,
+        description: str | None = None,
+        severity: str | None = None,
+        event_type: str | None = None,
+        time_window_seconds: int | None = None,
+        threshold: int | None = None,
+    ) -> None:
+        if rule_id is not None:
+            self.rule_id = rule_id
+        if name is not None:
+            self.name = name
+        if version is not None:
+            self.version = version
+        if description is not None:
+            self.description = description
+        if severity is not None:
+            self.severity = severity
+        if event_type is not None:
+            self.event_type = event_type
+        if time_window_seconds is not None:
+            self.time_window_seconds = time_window_seconds
+        if threshold is not None:
+            self.threshold = threshold
+
     def calculate_time_window(self, event_timestamp: datetime) -> tuple[datetime, datetime]:
         """Calculate inclusive sliding time window [window_start, window_end]."""
         window_end = event_timestamp
