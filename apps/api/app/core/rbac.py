@@ -42,6 +42,8 @@ PERMISSION_INTELLIGENCE_CREATE: Final[str] = "intelligence.create"
 PERMISSION_INTELLIGENCE_UPDATE: Final[str] = "intelligence.update"
 PERMISSION_INTELLIGENCE_DELETE: Final[str] = "intelligence.delete"
 
+PERMISSION_INVESTIGATIONS_READ: Final[str] = "investigations.read"
+
 PERMISSION_AUDIT_READ: Final[str] = "audit.read"
 
 # Permission catalog with human-readable descriptions
@@ -67,6 +69,9 @@ DEFAULT_PERMISSIONS: Final[dict[str, str]] = {
     PERMISSION_INTELLIGENCE_CREATE: "Submit threat indicators and intelligence records",
     PERMISSION_INTELLIGENCE_UPDATE: "Modify indicator status and intelligence records",
     PERMISSION_INTELLIGENCE_DELETE: "Deactivate or remove threat intelligence records",
+    PERMISSION_INVESTIGATIONS_READ: (
+        "Execute cross-entity correlation queries and view investigation analytics"
+    ),
     PERMISSION_AUDIT_READ: "Inspect append-only security audit logs",
 }
 
@@ -96,6 +101,7 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INTELLIGENCE_CREATE,
         PERMISSION_INTELLIGENCE_UPDATE,
         PERMISSION_INTELLIGENCE_DELETE,
+        PERMISSION_INVESTIGATIONS_READ,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_ANALYST: [
@@ -113,11 +119,13 @@ DEFAULT_ROLE_PERMISSIONS: Final[dict[str, list[str]]] = {
         PERMISSION_INTELLIGENCE_READ,
         PERMISSION_INTELLIGENCE_CREATE,
         PERMISSION_INTELLIGENCE_UPDATE,
+        PERMISSION_INVESTIGATIONS_READ,
         PERMISSION_AUDIT_READ,
     ],
     ROLE_VIEWER: [
         PERMISSION_ALERTS_READ,
         PERMISSION_INCIDENTS_READ,
         PERMISSION_INTELLIGENCE_READ,
+        PERMISSION_INVESTIGATIONS_READ,
     ],
 }

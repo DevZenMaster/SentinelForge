@@ -86,6 +86,7 @@ class Event(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         # Temporal compound indexes evaluated for detection rule sliding window scans
         Index("ix_events_source_ip_timestamp", "source_ip", "timestamp"),
+        Index("ix_events_destination_ip_timestamp", "destination_ip", "timestamp"),
         Index("ix_events_username_timestamp", "username", "timestamp"),
         Index("ix_events_event_type_timestamp", "event_type", "timestamp"),
         Index("ix_events_action_timestamp", "action", "timestamp"),

@@ -49,6 +49,7 @@ def test_event_model_compound_indexes() -> None:
     index_column_sets = [[col.name for col in idx.columns] for idx in table.indexes]
 
     assert ["source_ip", "timestamp"] in index_column_sets
+    assert ["destination_ip", "timestamp"] in index_column_sets
     assert ["username", "timestamp"] in index_column_sets
     assert ["event_type", "timestamp"] in index_column_sets
     assert ["action", "timestamp"] in index_column_sets
